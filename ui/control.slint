@@ -73,6 +73,12 @@ export component MainWindow inherits Window {
     in property <string> net-subnet: "—";
     in property <string> net-stack: "—";
 
+    // Storage (root filesystem)
+    in property <string> disk-total: "—";
+    in property <string> disk-used: "—";
+    in property <string> disk-free: "—";
+    in property <string> disk-pct: "—";
+
     callback refresh();
     callback select(int);
     callback filter-changed(string);
@@ -302,6 +308,28 @@ export component MainWindow inherits Window {
                 Rectangle { }   // spacer
                 HorizontalLayout {
                     Text { text: "Stos sieciowy: " + root.net-stack; color: #8a6f6f; font-size: 11px; }
+                    Rectangle { }
+                    Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                }
+            }
+        }
+
+        // ── Storage (root filesystem usage) ──────────────────────
+        Tab {
+            title: "Dyski";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: "System plików (/)"; color: #f2e9e9; font-size: 24px; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Tile { caption: "Pojemność"; value: root.disk-total; }
+                    Tile { caption: "Zajęte"; value: root.disk-used; }
+                    Tile { caption: "Wolne"; value: root.disk-free; }
+                    Tile { caption: "Wykorzystanie"; value: root.disk-pct; }
+                }
+                Rectangle { }   // spacer
+                HorizontalLayout {
                     Rectangle { }
                     Button { text: "Odśwież"; clicked => { root.refresh(); } }
                 }

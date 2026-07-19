@@ -176,6 +176,69 @@ pub fn net() -> Net {
     }
 }
 
+/// Filesystem usage of the root mount, shown on the Storage tab. Sizes are in
+/// bytes; `total = 0` means the query failed (degrade gracefully, never panic).
+#[derive(Clone, Debug, Default)]
+pub struct Storage {
+    /// Total size of the root filesystem.
+    pub total_bytes: u64,
+    /// Space still free.
+    pub free_bytes: u64,
+    /// Space in use (`total - free`).
+    pub used_bytes: u64,
+}
+
+/// Read root-filesystem usage via `statvfs`. On E-OS this hits redoxfs's
+/// `fstatvfs` (real block counts: `f_blocks`, `f_bavail`); on a host it's the
+/// POSIX `statvfs(2)`. Never panics — a failed query returns all-zero.
+pub fn storage() -> Storage {
+    #[cfg(target_os = "redox")]
+    {
+        redox_storage()
+    }
+    #[cfg(not(target_os = "redox"))]
+    {
+        host_storage()
+    }
+}
+
+/// Assemble a Storage from raw statvfs block figures.
+fn storage_from(f_bsize: u64, f_blocks: u64, f_bavail: u64) -> Storage {
+    let total = f_blocks.saturating_mul(f_bsize);
+    let free = f_bavail.saturating_mul(f_bsize);
+    Storage {
+        total_bytes: total,
+        free_bytes: free,
+        used_bytes: total.saturating_sub(free),
+    }
+}
+
+#[cfg(target_os = "redox")]
+fn redox_storage() -> Storage {
+    use std::os::fd::AsRawFd;
+    // fstatvfs needs a fd on the target filesystem; the root dir is fine.
+    let Ok(dir) = std::fs::File::open("/") else {
+        return Storage::default();
+    };
+    match libredox::call::fstatvfs(dir.as_raw_fd() as usize) {
+        Ok(v) => storage_from(v.f_bsize as u64, v.f_blocks as u64, v.f_bavail as u64),
+        Err(_) => Storage::default(),
+    }
+}
+
+#[cfg(not(target_os = "redox"))]
+fn host_storage() -> Storage {
+    use std::mem::MaybeUninit;
+    let mut buf = MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: statvfs fills `buf` from a valid NUL-terminated path.
+    let rc = unsafe { libc::statvfs(b"/\0".as_ptr().cast(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        return Storage::default();
+    }
+    let v = unsafe { buf.assume_init() };
+    storage_from(v.f_bsize as u64, v.f_blocks as u64, v.f_bavail as u64)
+}
+
 #[cfg(target_os = "redox")]
 mod redox {
     use super::{labels, Overview, Proc};

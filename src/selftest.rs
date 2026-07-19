@@ -14,6 +14,18 @@ pub fn run() -> Result<(), String> {
     security_core()?;
     kill_core()?;
     net_core()?;
+    storage_core()?;
+    Ok(())
+}
+
+/// Storage: `statvfs` must not panic and must be self-consistent. Where a real
+/// filesystem answers (total > 0) free must not exceed total; a zero result
+/// (unsupported) is tolerated rather than failing boot.
+fn storage_core() -> Result<(), String> {
+    let st = sys::storage();
+    if st.total_bytes != 0 && st.free_bytes > st.total_bytes {
+        return Err("storage free exceeds total".into());
+    }
     Ok(())
 }
 

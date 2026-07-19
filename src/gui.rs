@@ -174,6 +174,21 @@ fn refresh(win: &MainWindow, state: &State) {
     win.set_net_subnet(dash(&net.subnet));
     win.set_net_stack(SharedString::from(if net.stack_up { "aktywny" } else { "brak" }));
 
+    // Storage tab: root-filesystem usage via statvfs.
+    let st = sys::storage();
+    if st.total_bytes == 0 {
+        win.set_disk_total(SharedString::from("—"));
+        win.set_disk_used(SharedString::from("—"));
+        win.set_disk_free(SharedString::from("—"));
+        win.set_disk_pct(SharedString::from("—"));
+    } else {
+        win.set_disk_total(SharedString::from(sys::fmt_bytes(st.total_bytes)));
+        win.set_disk_used(SharedString::from(sys::fmt_bytes(st.used_bytes)));
+        win.set_disk_free(SharedString::from(sys::fmt_bytes(st.free_bytes)));
+        let pct = ((st.used_bytes as f64 / st.total_bytes as f64) * 100.0).round() as u64;
+        win.set_disk_pct(SharedString::from(format!("{pct}%")));
+    }
+
     // Processes tab: filtered, then grouped by app.
     let needle = state.filter.to_lowercase();
     let items = build_rows(sys::processes(), &needle, &state.expanded);
