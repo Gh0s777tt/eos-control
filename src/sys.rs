@@ -22,6 +22,9 @@ pub struct Overview {
     pub cpus: u32,
     /// Number of processes/contexts.
     pub processes: usize,
+    /// Total private memory across all processes, in bytes (summed from the
+    /// process list) — the "how much RAM is in use" figure.
+    pub mem_bytes: u64,
     /// Context switches since boot (from `sys:stat`), if available.
     pub context_switches: u64,
     /// Total hardware IRQs served (from `sys:stat`), if available.
@@ -144,6 +147,7 @@ mod redox {
             system: system(),
             cpus: cpus(),
             processes: procs.len(),
+            mem_bytes: procs.iter().map(|p| p.mem_bytes).sum(),
             context_switches: cs,
             irqs,
         }
@@ -283,6 +287,7 @@ mod host {
                 .map(|n| n.get() as u32)
                 .unwrap_or(0),
             processes: procs.len(),
+            mem_bytes: procs.iter().map(|p| p.mem_bytes).sum(),
             context_switches: 0,
             irqs: 0,
         }

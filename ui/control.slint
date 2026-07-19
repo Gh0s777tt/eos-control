@@ -49,6 +49,7 @@ export component MainWindow inherits Window {
     in property <string> system: "E-OS";
     in property <int> cpus: 0;
     in property <int> process-count: 0;
+    in property <string> mem-total: "—";
     in property <string> context-switches: "—";
     in property <string> irqs: "—";
 
@@ -91,6 +92,7 @@ export component MainWindow inherits Window {
                     spacing: 12px;
                     Tile { caption: "CPU"; value: root.cpus; }
                     Tile { caption: "Procesy"; value: root.process-count; }
+                    Tile { caption: "Pamięć (prywatna)"; value: root.mem-total; }
                     Tile { caption: "Przełączenia kontekstu"; value: root.context-switches; }
                     Tile { caption: "Przerwania (IRQ)"; value: root.irqs; }
                 }

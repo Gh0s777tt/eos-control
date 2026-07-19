@@ -11,13 +11,15 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
 
 ## Tabs
 
-- **Overview** — system identity, CPU count, process count, context switches, IRQs
-  (from `sys:uname` / `sys:cpu` / `sys:stat`).
+- **Overview** — system identity, CPU count, process count, **total private memory**,
+  context switches, IRQs (from `sys:uname` / `sys:cpu` / `sys:stat` / the process list).
 - **Processes** — a task manager that's meant to beat the Windows one:
+  - **ranked by memory** (heaviest first) so "what's eating my RAM?" is answered at a
+    glance; the footer shows the process count and total private memory;
   - **grouped by app**, not scattered: many instances of one program (think a
     browser with eight windows) collapse into a single `name ×N` header with the
-    summed memory and the *union* of their resources; expand it on demand instead
-    of hunting duplicates down a flat list;
+    summed memory and the *union* of their resources (groups rank by their summed
+    total); expand it on demand instead of hunting duplicates down a flat list;
   - every process carries a **human label** ("orbital = desktop server", "pcid = PCI
     driver manager") so you're never lost in cryptic names;
   - a **capability inspector** — select a process to see exactly which schemes/

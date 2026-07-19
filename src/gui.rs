@@ -73,8 +73,9 @@ fn leaf_item(p: &sys::Proc, indent: bool) -> ProcItem {
 
 /// Turn a flat process list into grouped rows: apps with more than one instance
 /// collapse into a single header ("name ×N", summed memory, union of resources),
-/// expandable on demand. Filtering is applied first; first-seen order is kept so
-/// the list is stable across refreshes.
+/// expandable on demand. Filtering is applied first, then rows are ranked by
+/// private memory **descending** (groups by their summed total) so the biggest
+/// memory users float to the top — the question a task manager exists to answer.
 fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -> Vec<ProcItem> {
     let procs: Vec<sys::Proc> = procs
         .into_iter()
@@ -96,15 +97,25 @@ fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -
         groups.entry(key).or_default().push(p);
     }
 
+    // Rank each app by its total private memory (heaviest first), ties broken by
+    // name so refreshes stay deterministic.
+    let mut entries: Vec<(u64, String, Vec<sys::Proc>)> = order
+        .into_iter()
+        .map(|key| {
+            let insts = groups.remove(&key).unwrap_or_default();
+            let total: u64 = insts.iter().map(|p| p.mem_bytes).sum();
+            (total, key, insts)
+        })
+        .collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
     let mut rows: Vec<ProcItem> = Vec::new();
-    for key in order {
-        let instances = groups.remove(&key).unwrap_or_default();
+    for (total, key, mut instances) in entries {
         if instances.len() == 1 {
             rows.push(leaf_item(&instances[0], false));
             continue;
         }
         // Group header: summed memory + the union of every instance's resources.
-        let total: u64 = instances.iter().map(|p| p.mem_bytes).sum();
         let mut seen = HashSet::new();
         let mut caps: Vec<String> = Vec::new();
         for p in &instances {
@@ -129,6 +140,8 @@ fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -
             count: instances.len() as i32,
         });
         if is_expanded {
+            // Heaviest instance first within the group too.
+            instances.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
             for p in &instances {
                 rows.push(leaf_item(p, true));
             }
@@ -140,12 +153,17 @@ fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -
 fn refresh(win: &MainWindow, state: &State) {
     // Overview tab.
     let ov = sys::overview();
+    let mem_total = sys::fmt_bytes(ov.mem_bytes);
     win.set_system(SharedString::from(ov.system.as_str()));
     win.set_cpus(ov.cpus as i32);
     win.set_process_count(ov.processes as i32);
+    win.set_mem_total(SharedString::from(mem_total.as_str()));
     win.set_context_switches(SharedString::from(ov.context_switches.to_string()));
     win.set_irqs(SharedString::from(ov.irqs.to_string()));
-    win.set_status(SharedString::from(format!("{} procesów", ov.processes)));
+    win.set_status(SharedString::from(format!(
+        "{} procesów · {} pamięci · wg pamięci ↓",
+        ov.processes, mem_total
+    )));
 
     // Processes tab: filtered, then grouped by app.
     let needle = state.filter.to_lowercase();
