@@ -66,6 +66,13 @@ export component MainWindow inherits Window {
     in-out property <string> roots: "/usr/bin, /etc";
     in property <string> sec-status: "Ustaw wzorzec, potem skanuj.";
 
+    // Network
+    in property <string> net-ip: "—";
+    in property <string> net-gateway: "—";
+    in property <string> net-dns: "—";
+    in property <string> net-subnet: "—";
+    in property <string> net-stack: "—";
+
     callback refresh();
     callback select(int);
     callback filter-changed(string);
@@ -275,6 +282,29 @@ export component MainWindow inherits Window {
                 }
 
                 Text { text: root.sec-status; color: #8a6f6f; font-size: 11px; }
+            }
+        }
+
+        // ── Network (live config + stack status) ─────────────────
+        Tab {
+            title: "Sieć";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: "Konfiguracja sieci"; color: #f2e9e9; font-size: 24px; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Tile { caption: "Adres IP"; value: root.net-ip; }
+                    Tile { caption: "Brama"; value: root.net-gateway; }
+                    Tile { caption: "DNS"; value: root.net-dns; }
+                    Tile { caption: "Maska podsieci"; value: root.net-subnet; }
+                }
+                Rectangle { }   // spacer
+                HorizontalLayout {
+                    Text { text: "Stos sieciowy: " + root.net-stack; color: #8a6f6f; font-size: 11px; }
+                    Rectangle { }
+                    Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                }
             }
         }
     }

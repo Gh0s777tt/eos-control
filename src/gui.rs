@@ -165,6 +165,15 @@ fn refresh(win: &MainWindow, state: &State) {
         ov.processes, mem_total
     )));
 
+    // Network tab: the current /etc/net config + whether the stack is up.
+    let net = sys::net();
+    let dash = |s: &str| SharedString::from(if s.is_empty() { "—" } else { s });
+    win.set_net_ip(dash(&net.ip));
+    win.set_net_gateway(dash(&net.gateway));
+    win.set_net_dns(dash(&net.dns));
+    win.set_net_subnet(dash(&net.subnet));
+    win.set_net_stack(SharedString::from(if net.stack_up { "aktywny" } else { "brak" }));
+
     // Processes tab: filtered, then grouped by app.
     let needle = state.filter.to_lowercase();
     let items = build_rows(sys::processes(), &needle, &state.expanded);

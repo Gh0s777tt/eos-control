@@ -13,6 +13,25 @@ pub fn run() -> Result<(), String> {
     system_core()?;
     security_core()?;
     kill_core()?;
+    net_core()?;
+    Ok(())
+}
+
+/// Network: reading the `/etc/net` config + the scheme probe must not panic.
+/// Where the image actually ships a config (`/etc/net/ip` present, i.e. on
+/// E-OS) the address must come back non-empty; on a bare host the files are
+/// absent so this is a no-op rather than a failure.
+fn net_core() -> Result<(), String> {
+    let net = sys::net();
+    // Touch every field so the read core is exercised end to end (and the
+    // CLI-only build doesn't flag the GUI-read fields as dead).
+    let _summary = format!(
+        "ip={} gw={} dns={} mask={} stack={}",
+        net.ip, net.gateway, net.dns, net.subnet, net.stack_up
+    );
+    if std::path::Path::new("/etc/net/ip").exists() && net.ip.is_empty() {
+        return Err("/etc/net/ip is present but sys::net() read no address".into());
+    }
     Ok(())
 }
 

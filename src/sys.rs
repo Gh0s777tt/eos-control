@@ -134,6 +134,48 @@ pub fn processes() -> Vec<Proc> {
     }
 }
 
+/// Network configuration + stack status, shown on the Network tab.
+///
+/// Reads the `/etc/net/*` files the base image ships (dhcpd keeps them current)
+/// and probes the scheme list to tell whether the TCP/IP stack is up. These are
+/// plain file/dir reads, identical on E-OS and on a host — on a host the files
+/// are absent so every field simply degrades to empty / `stack_up = false`.
+#[derive(Clone, Debug, Default)]
+pub struct Net {
+    /// Interface address, from `/etc/net/ip` (e.g. `10.0.2.15`).
+    pub ip: String,
+    /// Default gateway, from `/etc/net/ip_router`.
+    pub gateway: String,
+    /// DNS resolver, from `/etc/net/dns`.
+    pub dns: String,
+    /// Subnet mask, from `/etc/net/ip_subnet`.
+    pub subnet: String,
+    /// True when the `ip` scheme is present — i.e. netstack/smolnetd is running.
+    pub stack_up: bool,
+}
+
+/// Read the current network configuration + stack status. Never panics; any
+/// unreadable source degrades to empty / `false`.
+pub fn net() -> Net {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default().trim().to_string();
+    // The `ip` scheme only appears once netstack has registered it; listing
+    // `/scheme` is the reliable probe (statting `/scheme/ip` directly is a
+    // socket op, not a file op). On a host `/scheme` is absent → false.
+    let stack_up = std::fs::read_dir("/scheme")
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.file_name() == "ip")
+        })
+        .unwrap_or(false);
+    Net {
+        ip: read("/etc/net/ip"),
+        gateway: read("/etc/net/ip_router"),
+        dns: read("/etc/net/dns"),
+        subnet: read("/etc/net/ip_subnet"),
+        stack_up,
+    }
+}
+
 #[cfg(target_os = "redox")]
 mod redox {
     use super::{labels, Overview, Proc};
