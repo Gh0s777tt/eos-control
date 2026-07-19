@@ -213,19 +213,50 @@ fn storage_from(f_bsize: u64, f_blocks: u64, f_bavail: u64) -> Storage {
     }
 }
 
-/// Power the machine off. On E-OS this writes the kernel power control
-/// `sys:kstop` — the exact mechanism coreutils `shutdown` uses; the machine
-/// then goes down (so a successful return is immediately followed by halt). On
-/// a host `/scheme/sys/kstop` is absent, so this fails harmlessly instead of
-/// touching the developer's box.
+/// Power the machine off. The power control `sys:kstop` is root-only, and
+/// eos-control runs as the desktop user — a direct write gets EPERM. So we run
+/// coreutils `shutdown` through `sudo`: the desktop user is in the `sudo` group
+/// with an empty password, and sudo reads its password from **stdin**, so we
+/// feed an empty line and it elevates without a TTY. `shutdown` (as root) then
+/// writes `sys:kstop` and the machine goes down.
 pub fn shutdown() -> Result<(), String> {
-    std::fs::write("/scheme/sys/kstop", b"shutdown").map_err(|e| format!("shutdown: {e}"))
+    power("")
 }
 
-/// Reboot the machine — same `sys:kstop` control as [`shutdown`], message
-/// `"reboot"`.
+/// Reboot the machine — `shutdown -r`, same privileged path as [`shutdown`].
 pub fn reboot() -> Result<(), String> {
-    std::fs::write("/scheme/sys/kstop", b"reboot").map_err(|e| format!("reboot: {e}"))
+    power("-r")
+}
+
+/// Spawn `sudo shutdown [flag]`, feeding an empty password to sudo's stdin.
+/// Redox-only: on a host this is a guarded no-op so the GUI can never take down
+/// a developer's machine.
+#[cfg(target_os = "redox")]
+fn power(flag: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("sudo");
+    cmd.arg("shutdown");
+    if !flag.is_empty() {
+        cmd.arg(flag);
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("sudo: {e}"))?;
+    // The desktop user has no password; an empty line satisfies sudo's prompt.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"\n");
+    }
+    // Don't wait — the machine goes down once shutdown writes sys:kstop.
+    Ok(())
+}
+
+#[cfg(not(target_os = "redox"))]
+fn power(_flag: &str) -> Result<(), String> {
+    Err("dostępne tylko na E-OS".into())
 }
 
 #[cfg(target_os = "redox")]
