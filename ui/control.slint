@@ -79,6 +79,11 @@ export component MainWindow inherits Window {
     in property <string> disk-free: "—";
     in property <string> disk-pct: "—";
 
+    // Power — a two-step confirm each, so a stray click can't halt the machine.
+    in-out property <bool> confirm-reboot: false;
+    in-out property <bool> confirm-shutdown: false;
+    in property <string> power-status;
+
     callback refresh();
     callback select(int);
     callback filter-changed(string);
@@ -86,6 +91,8 @@ export component MainWindow inherits Window {
     callback kill(string);     // force-kill a process by pid
     callback baseline();
     callback scan();
+    callback reboot();     // write sys:kstop "reboot"
+    callback shutdown();   // write sys:kstop "shutdown"
 
     // Colour for a finding by kind: warn=red, modified=orange, new=amber,
     // removed=muted, ok=text.
@@ -333,6 +340,45 @@ export component MainWindow inherits Window {
                     Rectangle { }
                     Button { text: "Odśwież"; clicked => { root.refresh(); } }
                 }
+            }
+        }
+
+        // ── Power (reboot / shutdown, each two-step confirm) ─────
+        Tab {
+            title: "Zasilanie";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: "Zasilanie systemu"; color: #f2e9e9; font-size: 24px; }
+                Text {
+                    text: "Zamknij lub uruchom E-OS ponownie. Niezapisana praca zostanie utracona — każda akcja wymaga potwierdzenia.";
+                    color: #8a6f6f; font-size: 12px; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    if !root.confirm-reboot: Button {
+                        text: "Uruchom ponownie";
+                        clicked => { root.confirm-reboot = true; root.confirm-shutdown = false; }
+                    }
+                    if root.confirm-reboot: Button {
+                        text: "⚠ Potwierdź restart";
+                        clicked => { root.reboot(); root.confirm-reboot = false; }
+                    }
+                    if !root.confirm-shutdown: Button {
+                        text: "Wyłącz";
+                        clicked => { root.confirm-shutdown = true; root.confirm-reboot = false; }
+                    }
+                    if root.confirm-shutdown: Button {
+                        text: "⚠ Potwierdź wyłączenie";
+                        clicked => { root.shutdown(); root.confirm-shutdown = false; }
+                    }
+                    if root.confirm-reboot || root.confirm-shutdown: Button {
+                        text: "Anuluj";
+                        clicked => { root.confirm-reboot = false; root.confirm-shutdown = false; }
+                    }
+                    Rectangle { }
+                }
+                Text { text: root.power-status; color: #e50914; font-size: 11px; }
             }
         }
     }

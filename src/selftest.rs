@@ -15,6 +15,18 @@ pub fn run() -> Result<(), String> {
     kill_core()?;
     net_core()?;
     storage_core()?;
+    power_core()?;
+    Ok(())
+}
+
+/// Power: the reboot/shutdown functions must **not** run here — the self-test
+/// executes during boot (an init.d probe), and calling them would halt the
+/// machine mid-boot. Only reference them (so the CLI build doesn't flag them
+/// dead); the actions are proven by the render test, where clicking Reboot
+/// actually reboots the VM.
+fn power_core() -> Result<(), String> {
+    let _reboot: fn() -> Result<(), String> = sys::reboot;
+    let _shutdown: fn() -> Result<(), String> = sys::shutdown;
     Ok(())
 }
 

@@ -213,6 +213,21 @@ fn storage_from(f_bsize: u64, f_blocks: u64, f_bavail: u64) -> Storage {
     }
 }
 
+/// Power the machine off. On E-OS this writes the kernel power control
+/// `sys:kstop` — the exact mechanism coreutils `shutdown` uses; the machine
+/// then goes down (so a successful return is immediately followed by halt). On
+/// a host `/scheme/sys/kstop` is absent, so this fails harmlessly instead of
+/// touching the developer's box.
+pub fn shutdown() -> Result<(), String> {
+    std::fs::write("/scheme/sys/kstop", b"shutdown").map_err(|e| format!("shutdown: {e}"))
+}
+
+/// Reboot the machine — same `sys:kstop` control as [`shutdown`], message
+/// `"reboot"`.
+pub fn reboot() -> Result<(), String> {
+    std::fs::write("/scheme/sys/kstop", b"reboot").map_err(|e| format!("reboot: {e}"))
+}
+
 #[cfg(target_os = "redox")]
 fn redox_storage() -> Storage {
     use std::os::fd::AsRawFd;

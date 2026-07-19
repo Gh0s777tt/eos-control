@@ -268,6 +268,28 @@ pub fn run() {
             refresh(&w, &state.borrow());
         });
     }
+    {
+        // Power actions: write sys:kstop — the machine goes down right after.
+        // The two-step confirm lives in the UI, so we just act.
+        let weak = win.as_weak();
+        win.on_reboot(move || {
+            let Some(w) = weak.upgrade() else { return };
+            w.set_power_status(SharedString::from(match sys::reboot() {
+                Ok(()) => "Ponowne uruchamianie…".to_string(),
+                Err(e) => format!("Błąd restartu: {e}"),
+            }));
+        });
+    }
+    {
+        let weak = win.as_weak();
+        win.on_shutdown(move || {
+            let Some(w) = weak.upgrade() else { return };
+            w.set_power_status(SharedString::from(match sys::shutdown() {
+                Ok(()) => "Wyłączanie…".to_string(),
+                Err(e) => format!("Błąd wyłączenia: {e}"),
+            }));
+        });
+    }
 
     // ── Security tab ─────────────────────────────────────────────
     // One baseline DB shared by both actions; None if it can't be opened.
