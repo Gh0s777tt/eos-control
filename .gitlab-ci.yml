@@ -1,0 +1,21 @@
+# E-OS Control CI — light tier on gitlab.com shared runners.
+# The real target build (aarch64/x86_64-unknown-redox) happens in the meta-repo
+# heavy build; here we gate formatting and the CLI/selftest half.
+stages: [lint, build]
+
+fmt:
+  image: "rust:slim"
+  stage: lint
+  script:
+    - rustup component add rustfmt
+    - cargo fmt -- --check
+
+build-host:
+  image: "rust:latest"
+  stage: build
+  script:
+    # Hosts build the CLI/selftest half only (--no-default-features): the GUI
+    # (Slint over eos-ui/orbclient) targets Redox. The full GUI cross-build gate
+    # is the meta-repo heavy image build.
+    - cargo build --locked --no-default-features
+    - cargo run  --locked --no-default-features -- --selftest

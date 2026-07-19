@@ -1,0 +1,218 @@
+// E-OS Control — Crimson control center (Slint, software renderer).
+// Palette: deep black #0c0202, panel #160404, blood red #e50914,
+// highlight #7a0a0a, text #f2e9e9, muted #8a6f6f.
+
+import { TabWidget, ListView, LineEdit, Button } from "std-widgets.slint";
+
+export struct ProcItem {
+    pid: string,
+    name: string,
+    label: string,
+    owner: string,
+    memory: string,
+    cpu-time: string,
+    caps: string,       // open schemes, comma-joined — the capability profile
+}
+
+export struct Finding {
+    path: string,
+    status: string,     // OK / NOWY / ZMIENIONY / USUNIĘTY / OSTRZEŻENIE
+    detail: string,
+    kind: int,          // 0 ok · 1 new · 2 modified · 3 removed · 4 warn
+}
+
+component Tile inherits Rectangle {
+    in property <string> caption;
+    in property <string> value;
+    background: #160404;
+    border-radius: 8px;
+    min-width: 150px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        Text { text: root.value; color: #e50914; font-size: 22px; }
+        Text { text: root.caption; color: #8a6f6f; font-size: 12px; }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "E-OS Control";
+    background: #0c0202;
+    preferred-width: 860px;
+    preferred-height: 620px;
+
+    // Overview
+    in property <string> system: "E-OS";
+    in property <int> cpus: 0;
+    in property <int> process-count: 0;
+    in property <string> context-switches: "—";
+    in property <string> irqs: "—";
+
+    // Processes
+    in property <[ProcItem]> procs;
+    in-out property <int> selected: -1;
+    in property <string> status;
+
+    // Security
+    in property <[Finding]> findings;
+    in-out property <string> roots: "/usr/bin, /etc";
+    in property <string> sec-status: "Ustaw wzorzec, potem skanuj.";
+
+    callback refresh();
+    callback select(int);
+    callback filter-changed(string);
+    callback baseline();
+    callback scan();
+
+    // Colour for a finding by kind: warn=red, modified=orange, new=amber,
+    // removed=muted, ok=text.
+    function kind-color(k: int) -> color {
+        k == 4 ? #e50914 : k == 2 ? #ff8a3d : k == 1 ? #ffcf5a : k == 3 ? #8a6f6f : #f2e9e9
+    }
+
+    TabWidget {
+        // ── Overview ─────────────────────────────────────────────
+        Tab {
+            title: "Przegląd";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: root.system; color: #f2e9e9; font-size: 24px; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Tile { caption: "CPU"; value: root.cpus; }
+                    Tile { caption: "Procesy"; value: root.process-count; }
+                    Tile { caption: "Przełączenia kontekstu"; value: root.context-switches; }
+                    Tile { caption: "Przerwania (IRQ)"; value: root.irqs; }
+                }
+                Rectangle { }   // spacer
+                HorizontalLayout {
+                    Text { text: root.status; color: #8a6f6f; font-size: 11px; }
+                    Rectangle { }
+                    Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                }
+            }
+        }
+
+        // ── Processes (task manager + capability inspector) ──────
+        Tab {
+            title: "Procesy";
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+
+                LineEdit {
+                    placeholder-text: "Filtruj procesy…";
+                    edited(t) => { root.filter-changed(t); }
+                }
+
+                Rectangle {
+                    background: #160404;
+                    border-radius: 8px;
+                    ListView {
+                        for p[i] in root.procs: Rectangle {
+                            height: 46px;
+                            background: i == root.selected ? #7a0a0a : transparent;
+                            border-radius: 5px;
+                            TouchArea { clicked => { root.select(i); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                Text {
+                                    text: p.pid; color: #8a6f6f; font-size: 13px;
+                                    width: 56px; vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: p.name; color: #f2e9e9; font-size: 13px; overflow: elide; }
+                                    Text {
+                                        text: p.label == "" ? p.caps : p.label;
+                                        color: #8a6f6f; font-size: 10px; overflow: elide;
+                                    }
+                                }
+                                Text {
+                                    text: p.memory; color: #f2e9e9; font-size: 12px;
+                                    width: 80px; horizontal-alignment: right; vertical-alignment: center;
+                                }
+                                Text {
+                                    text: p.cpu-time; color: #8a6f6f; font-size: 11px;
+                                    width: 96px; horizontal-alignment: right; vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Capability inspector for the selected process.
+                Rectangle {
+                    height: 96px;
+                    background: #160404;
+                    border-radius: 8px;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 4px;
+                        Text {
+                            text: root.selected >= 0 && root.selected < root.procs.length
+                                ? "Zasoby: " + root.procs[root.selected].name
+                                : "Zaznacz proces, by zobaczyć jego otwarte zasoby (uprawnienia)";
+                            color: #e50914; font-size: 12px;
+                        }
+                        Text {
+                            text: root.selected >= 0 && root.selected < root.procs.length
+                                ? (root.procs[root.selected].caps == "" ? "(brak / niedostępne)" : root.procs[root.selected].caps)
+                                : "";
+                            color: #f2e9e9; font-size: 12px; wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Security (integrity baseline + permission audit) ─────
+        Tab {
+            title: "Bezpieczeństwo";
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.roots;
+                        placeholder-text: "Katalogi (po przecinku), np. /usr/bin, /etc";
+                    }
+                    Button { text: "Ustaw wzorzec"; clicked => { root.baseline(); } }
+                    Button { text: "Skanuj"; clicked => { root.scan(); } }
+                }
+
+                Rectangle {
+                    background: #160404;
+                    border-radius: 8px;
+                    ListView {
+                        for f in root.findings: Rectangle {
+                            height: 40px;
+                            background: transparent;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                Text {
+                                    text: f.status; color: root.kind-color(f.kind);
+                                    font-size: 12px; width: 110px; vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: f.path; color: #f2e9e9; font-size: 12px; overflow: elide; }
+                                    Text { text: f.detail; color: #8a6f6f; font-size: 10px; overflow: elide; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Text { text: root.sec-status; color: #8a6f6f; font-size: 11px; }
+            }
+        }
+    }
+}

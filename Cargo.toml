@@ -1,0 +1,33 @@
+[package]
+name = "eos-control"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "E-OS Control — unified Crimson control center (system, processes + capabilities, security)"
+repository = "https://gitlab.com/e-os/eos-control"
+build = "build.rs"
+
+[[bin]]
+name = "eos-control"
+path = "src/main.rs"
+
+[dependencies]
+# Security tab: blake3 file-integrity hashing (default-features off drops the
+# C/asm SIMD paths that don't cross-compile cleanly) + a WAL SQLite baseline.
+blake3   = { version = "1", default-features = false }
+rusqlite = { version = "0.31", features = ["bundled"] }
+# GUI via Slint; the Redox backend (software renderer over orbclient) + fonts
+# live in the shared eos-ui crate.
+slint  = { version = "1.17", default-features = false, features = ["compat-1-0", "std", "renderer-software"], optional = true }
+eos-ui = { git = "https://github.com/Gh0s777tt/eos-ui.git", rev = "9fb3f3e4a3ecf1c152b03662db0723869206e5d6", optional = true }
+
+[features]
+# The GUI targets Redox; hosts build the CLI/selftest half (--no-default-features).
+default = ["gui"]
+gui = ["dep:slint", "dep:eos-ui"]
+
+[build-dependencies]
+slint-build = "1.17"
+
+[profile.release]
+overflow-checks = true   # E-OS hardening baseline

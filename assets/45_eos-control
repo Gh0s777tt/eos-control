@@ -1,0 +1,6 @@
+name=E-OS Control
+binary=/usr/bin/eos-control
+icon=/ui/icons/apps/eos-control.png
+category=System
+description=Centrum sterowania E-OS (Crimson) — system, procesy, bezpieczeństwo
+author=E-OS
