@@ -45,8 +45,66 @@ pub struct Proc {
     pub cpu_time: String,
     /// Private memory (PRIVATE column), a pre-formatted size like `1 MB`.
     pub memory: String,
+    /// Private memory in bytes (parsed from `memory`), so groups can sum it.
+    pub mem_bytes: u64,
     /// The schemes this process holds open — its capability profile.
     pub resources: Vec<String>,
+}
+
+/// Parse a kernel-formatted size (`"1 MB"`, `"512 KB"`, `"1024 B"`) into bytes.
+pub fn parse_bytes(s: &str) -> u64 {
+    let s = s.trim();
+    let (num, unit) = match s.split_once(' ') {
+        Some((n, u)) => (n, u.trim()),
+        None => (s, "B"),
+    };
+    let n: f64 = num.trim().parse().unwrap_or(0.0);
+    let mult: f64 = match unit {
+        "KB" | "KiB" => 1024.0,
+        "MB" | "MiB" => 1024.0 * 1024.0,
+        "GB" | "GiB" => 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    (n * mult) as u64
+}
+
+/// Format a byte count back into a compact `"1.2 MB"`-style string.
+pub fn fmt_bytes(b: u64) -> String {
+    const U: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
+}
+
+/// Force-kill a process by pid (SIGKILL). On E-OS this is the kernel's
+/// unblockable ForceKill; on a host it's POSIX `kill(2)`. Use when a process
+/// is stuck or misbehaving.
+#[cfg(target_os = "redox")]
+pub fn kill(pid: i64) -> Result<(), String> {
+    // `libredox::call::kill` is how E-OS daemons (audiod, ptyd) signal; relibc
+    // routes SIGKILL to the kernel's unblockable ForceKill.
+    libredox::call::kill(pid as usize, libredox::flag::SIGKILL as u32)
+        .map_err(|e| format!("kill {pid}: {e}"))
+}
+
+/// Force-kill a process by pid (SIGKILL). See the Redox variant.
+#[cfg(not(target_os = "redox"))]
+pub fn kill(pid: i64) -> Result<(), String> {
+    // SAFETY: `kill` is a simple syscall with no memory effects.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!("kill {pid}: {}", std::io::Error::last_os_error()))
+    }
 }
 
 /// Take an Overview snapshot. Never panics — unreadable sources degrade to 0/empty.
@@ -111,6 +169,7 @@ mod redox {
                     status: col(18, 24),
                     cpu_time: col(41, 53),
                     memory: col(53, 61),
+                    mem_bytes: super::parse_bytes(line.get(53..61).unwrap_or("")),
                     resources: caps.get(&pid).cloned().unwrap_or_default(),
                     pid,
                     name,

@@ -12,7 +12,40 @@ use std::os::unix::fs::PermissionsExt;
 pub fn run() -> Result<(), String> {
     system_core()?;
     security_core()?;
+    kill_core()?;
     Ok(())
+}
+
+/// ForceKill: spawn a throwaway child, force-kill it by pid, and confirm it dies.
+/// Proves the Processes-tab "Wymuś zamknięcie" path end to end. Tolerant of an
+/// environment without a spawnable helper (skips rather than failing boot).
+fn kill_core() -> Result<(), String> {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    // A long-lived child we can safely kill. If we can't spawn one (no `sleep`
+    // on PATH) we can't prove the path here — skip without failing.
+    let mut child = match Command::new("sleep").arg("30").spawn() {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let pid = child.id() as i64;
+    sys::kill(pid).map_err(|e| format!("ForceKill returned an error: {e}"))?;
+    // It must exit promptly; poll up to ~3 s so a failed kill can't hang boot.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()), // reaped → it died
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill(); // clean the leak up on failure
+                    let _ = child.wait();
+                    return Err("process still alive 3 s after ForceKill".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("try_wait after ForceKill: {e}")),
+        }
+    }
 }
 
 /// Overview + Processes: a real system identity, ≥1 CPU, consistent counts.
@@ -31,6 +64,13 @@ fn system_core() -> Result<(), String> {
             ov.processes,
             procs.len()
         ));
+    }
+    // The byte parse/format pair underpins per-group memory sums (Processes tab).
+    if sys::parse_bytes("1 MB") != 1024 * 1024 {
+        return Err(format!("parse_bytes(\"1 MB\") = {}", sys::parse_bytes("1 MB")));
+    }
+    if sys::fmt_bytes(1024 * 1024) != "1.0 MB" {
+        return Err(format!("fmt_bytes(1 MiB) = {}", sys::fmt_bytes(1024 * 1024)));
     }
     Ok(())
 }

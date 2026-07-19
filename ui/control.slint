@@ -12,6 +12,10 @@ export struct ProcItem {
     memory: string,
     cpu-time: string,
     caps: string,       // open schemes, comma-joined — the capability profile
+    is-group: bool,     // true = a collapsible group header (many instances of one app)
+    expanded: bool,     // group header: is it currently expanded?
+    indent: bool,       // leaf: an instance nested under a group header
+    count: int,         // group header: how many instances it collapses
 }
 
 export struct Finding {
@@ -52,6 +56,9 @@ export component MainWindow inherits Window {
     in property <[ProcItem]> procs;
     in-out property <int> selected: -1;
     in property <string> status;
+    // Force-kill: a two-step confirm so a stuck process can be ended safely.
+    in-out property <bool> confirm-kill: false;
+    in property <string> kill-status;
 
     // Security
     in property <[Finding]> findings;
@@ -61,6 +68,8 @@ export component MainWindow inherits Window {
     callback refresh();
     callback select(int);
     callback filter-changed(string);
+    callback toggle(string);   // expand/collapse a process group by app name
+    callback kill(string);     // force-kill a process by pid
     callback baseline();
     callback scan();
 
@@ -111,23 +120,44 @@ export component MainWindow inherits Window {
                     border-radius: 8px;
                     ListView {
                         for p[i] in root.procs: Rectangle {
+                            // Group headers stand out (darker bar); leaves highlight when selected.
                             height: 46px;
-                            background: i == root.selected ? #7a0a0a : transparent;
+                            background: p.is-group ? #1e0606 : (i == root.selected ? #7a0a0a : transparent);
                             border-radius: 5px;
-                            TouchArea { clicked => { root.select(i); } }
+                            TouchArea {
+                                // A group header toggles; a real process selects (for caps + kill).
+                                clicked => {
+                                    if (p.is-group) {
+                                        root.toggle(p.name);
+                                    } else {
+                                        root.select(i);
+                                        root.confirm-kill = false;
+                                    }
+                                }
+                            }
                             HorizontalLayout {
-                                padding-left: 12px;
+                                padding-left: p.indent ? 26px : 12px;
                                 padding-right: 12px;
                                 spacing: 12px;
+                                // Group chevron ▸/▾ (blank for leaves keeps columns aligned).
                                 Text {
-                                    text: p.pid; color: #8a6f6f; font-size: 13px;
-                                    width: 56px; vertical-alignment: center;
+                                    text: p.is-group ? (p.expanded ? "▾" : "▸") : (p.indent ? "·" : "");
+                                    color: #e50914; font-size: 13px;
+                                    width: 12px; vertical-alignment: center;
+                                }
+                                Text {
+                                    text: p.is-group ? "" : p.pid; color: #8a6f6f; font-size: 13px;
+                                    width: 52px; vertical-alignment: center;
                                 }
                                 VerticalLayout {
                                     alignment: center;
-                                    Text { text: p.name; color: #f2e9e9; font-size: 13px; overflow: elide; }
                                     Text {
-                                        text: p.label == "" ? p.caps : p.label;
+                                        text: p.is-group ? p.name + "  ×" + p.count : p.name;
+                                        color: p.is-group ? #f2e9e9 : #f2e9e9;
+                                        font-size: 13px; font-weight: p.is-group ? 700 : 400; overflow: elide;
+                                    }
+                                    Text {
+                                        text: p.is-group ? p.label : (p.label == "" ? p.caps : p.label);
                                         color: #8a6f6f; font-size: 10px; overflow: elide;
                                     }
                                 }
@@ -144,25 +174,56 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Capability inspector for the selected process.
-                Rectangle {
-                    height: 96px;
+                // Capability inspector + force-kill for the selected process.
+                panel := Rectangle {
+                    height: 128px;
                     background: #160404;
                     border-radius: 8px;
+                    // A real (non-group) process is selected → caps + kill are live.
+                    property <bool> has-sel: root.selected >= 0 && root.selected < root.procs.length
+                        && !root.procs[root.selected].is-group;
                     VerticalLayout {
                         padding: 10px;
-                        spacing: 4px;
+                        spacing: 6px;
                         Text {
-                            text: root.selected >= 0 && root.selected < root.procs.length
-                                ? "Zasoby: " + root.procs[root.selected].name
-                                : "Zaznacz proces, by zobaczyć jego otwarte zasoby (uprawnienia)";
+                            text: panel.has-sel
+                                ? "Zasoby: " + root.procs[root.selected].name + "  (PID " + root.procs[root.selected].pid + ")"
+                                : "Zaznacz proces, by zobaczyć jego otwarte zasoby (uprawnienia) i móc go zamknąć";
                             color: #e50914; font-size: 12px;
                         }
                         Text {
-                            text: root.selected >= 0 && root.selected < root.procs.length
+                            text: panel.has-sel
                                 ? (root.procs[root.selected].caps == "" ? "(brak / niedostępne)" : root.procs[root.selected].caps)
                                 : "";
                             color: #f2e9e9; font-size: 12px; wrap: word-wrap;
+                        }
+                        Rectangle { }   // spacer pushes the action row to the bottom
+                        HorizontalLayout {
+                            spacing: 8px;
+                            height: 28px;
+                            // Step 1: offer to kill the selected process.
+                            if panel.has-sel && !root.confirm-kill: Button {
+                                text: "⚠ Wymuś zamknięcie";
+                                clicked => { root.confirm-kill = true; }
+                            }
+                            // Step 2: confirm on the exact pid shown, then act.
+                            if panel.has-sel && root.confirm-kill: Text {
+                                text: "Wymusić zamknięcie PID " + root.procs[root.selected].pid + " (" + root.procs[root.selected].name + ")?";
+                                color: #ffcf5a; font-size: 12px; vertical-alignment: center;
+                            }
+                            if panel.has-sel && root.confirm-kill: Button {
+                                text: "Tak, zakończ";
+                                clicked => { root.kill(root.procs[root.selected].pid); root.confirm-kill = false; }
+                            }
+                            if panel.has-sel && root.confirm-kill: Button {
+                                text: "Anuluj";
+                                clicked => { root.confirm-kill = false; }
+                            }
+                            Rectangle { }
+                            Text {
+                                text: root.kill-status; color: #8a6f6f; font-size: 11px;
+                                vertical-alignment: center; horizontal-alignment: right;
+                            }
                         }
                     }
                 }

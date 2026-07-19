@@ -29,5 +29,14 @@ gui = ["dep:slint", "dep:eos-ui"]
 [build-dependencies]
 slint-build = "1.17"
 
+# Force-kill (SIGKILL). On Redox the modern signal path is `libredox::call::kill`
+# (the raw syscall crate dropped `kill`); relibc maps it to the kernel ForceKill.
+# On a host it's POSIX kill(2) via libc.
+[target.'cfg(target_os = "redox")'.dependencies]
+libredox = "0.1"
+
+[target.'cfg(not(target_os = "redox"))'.dependencies]
+libc = "0.2"
+
 [profile.release]
 overflow-checks = true   # E-OS hardening baseline

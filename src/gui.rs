@@ -5,6 +5,7 @@ use crate::security::{db, scan};
 use crate::sys;
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -48,6 +49,92 @@ fn show_findings(win: &MainWindow, findings: &[db::Finding]) {
 /// The GUI-side state that outlives a single refresh.
 struct State {
     filter: String,
+    /// App names whose group is currently expanded. Groups are collapsed by
+    /// default (tidy view): one "chrome ×8" row instead of eight scattered ones.
+    expanded: HashSet<String>,
+}
+
+/// Build a leaf (real process) row. `indent` marks it as nested under a group.
+fn leaf_item(p: &sys::Proc, indent: bool) -> ProcItem {
+    ProcItem {
+        pid: SharedString::from(p.pid.as_str()),
+        name: SharedString::from(p.name.as_str()),
+        label: SharedString::from(p.label.as_str()),
+        owner: SharedString::from(p.owner.as_str()),
+        memory: SharedString::from(p.memory.as_str()),
+        cpu_time: SharedString::from(p.cpu_time.as_str()),
+        caps: SharedString::from(p.resources.join(", ")),
+        is_group: false,
+        expanded: false,
+        indent,
+        count: 0,
+    }
+}
+
+/// Turn a flat process list into grouped rows: apps with more than one instance
+/// collapse into a single header ("name ×N", summed memory, union of resources),
+/// expandable on demand. Filtering is applied first; first-seen order is kept so
+/// the list is stable across refreshes.
+fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -> Vec<ProcItem> {
+    let procs: Vec<sys::Proc> = procs
+        .into_iter()
+        .filter(|p| {
+            needle.is_empty()
+                || p.name.to_lowercase().contains(needle)
+                || p.label.to_lowercase().contains(needle)
+                || p.pid.contains(needle)
+        })
+        .collect();
+
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<sys::Proc>> = HashMap::new();
+    for p in procs {
+        let key = p.name.clone();
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(p);
+    }
+
+    let mut rows: Vec<ProcItem> = Vec::new();
+    for key in order {
+        let instances = groups.remove(&key).unwrap_or_default();
+        if instances.len() == 1 {
+            rows.push(leaf_item(&instances[0], false));
+            continue;
+        }
+        // Group header: summed memory + the union of every instance's resources.
+        let total: u64 = instances.iter().map(|p| p.mem_bytes).sum();
+        let mut seen = HashSet::new();
+        let mut caps: Vec<String> = Vec::new();
+        for p in &instances {
+            for r in &p.resources {
+                if seen.insert(r.clone()) {
+                    caps.push(r.clone());
+                }
+            }
+        }
+        let is_expanded = expanded.contains(&key);
+        rows.push(ProcItem {
+            pid: SharedString::new(),
+            name: SharedString::from(key.as_str()),
+            label: SharedString::from(crate::labels::describe(&key)),
+            owner: SharedString::new(),
+            memory: SharedString::from(sys::fmt_bytes(total)),
+            cpu_time: SharedString::new(),
+            caps: SharedString::from(caps.join(", ")),
+            is_group: true,
+            expanded: is_expanded,
+            indent: false,
+            count: instances.len() as i32,
+        });
+        if is_expanded {
+            for p in &instances {
+                rows.push(leaf_item(p, true));
+            }
+        }
+    }
+    rows
 }
 
 fn refresh(win: &MainWindow, state: &State) {
@@ -60,26 +147,9 @@ fn refresh(win: &MainWindow, state: &State) {
     win.set_irqs(SharedString::from(ov.irqs.to_string()));
     win.set_status(SharedString::from(format!("{} procesów", ov.processes)));
 
-    // Processes tab, filtered.
+    // Processes tab: filtered, then grouped by app.
     let needle = state.filter.to_lowercase();
-    let items: Vec<ProcItem> = sys::processes()
-        .into_iter()
-        .filter(|p| {
-            needle.is_empty()
-                || p.name.to_lowercase().contains(&needle)
-                || p.label.to_lowercase().contains(&needle)
-                || p.pid.contains(&needle)
-        })
-        .map(|p| ProcItem {
-            pid: SharedString::from(p.pid.as_str()),
-            name: SharedString::from(p.name.as_str()),
-            label: SharedString::from(p.label.as_str()),
-            owner: SharedString::from(p.owner.as_str()),
-            memory: SharedString::from(p.memory.as_str()),
-            cpu_time: SharedString::from(p.cpu_time.as_str()),
-            caps: SharedString::from(p.resources.join(", ")),
-        })
-        .collect();
+    let items = build_rows(sys::processes(), &needle, &state.expanded);
     win.set_procs(ModelRc::new(VecModel::from(items)));
 }
 
@@ -89,6 +159,7 @@ pub fn run() {
 
     let state = Rc::new(RefCell::new(State {
         filter: String::new(),
+        expanded: HashSet::new(),
     }));
     let win = MainWindow::new().expect("eos-control: cannot create the window");
     refresh(&win, &state.borrow());
@@ -117,6 +188,42 @@ pub fn run() {
                 w.set_selected(-1);
                 refresh(&w, &state.borrow());
             }
+        });
+    }
+    {
+        // Expand/collapse a process group; reset the selection so a stale index
+        // can't outlive the structure change.
+        let (weak, state) = (win.as_weak(), state.clone());
+        win.on_toggle(move |name| {
+            {
+                let mut s = state.borrow_mut();
+                let n = name.to_string();
+                if !s.expanded.remove(&n) {
+                    s.expanded.insert(n);
+                }
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_selected(-1);
+                w.set_confirm_kill(false);
+                refresh(&w, &state.borrow());
+            }
+        });
+    }
+    {
+        // Force-kill the confirmed pid (SIGKILL / kernel ForceKill), then refresh.
+        let (weak, state) = (win.as_weak(), state.clone());
+        win.on_kill(move |pid| {
+            let Some(w) = weak.upgrade() else { return };
+            let msg = match pid.to_string().trim().parse::<i64>() {
+                Ok(p) => match sys::kill(p) {
+                    Ok(()) => format!("Zakończono PID {p}."),
+                    Err(e) => format!("Błąd: {e}"),
+                },
+                Err(_) => "Nieprawidłowy PID.".to_string(),
+            };
+            w.set_kill_status(SharedString::from(msg));
+            w.set_selected(-1);
+            refresh(&w, &state.borrow());
         });
     }
 

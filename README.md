@@ -14,10 +14,16 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
 - **Overview** — system identity, CPU count, process count, context switches, IRQs
   (from `sys:uname` / `sys:cpu` / `sys:stat`).
 - **Processes** — a task manager that's meant to beat the Windows one:
+  - **grouped by app**, not scattered: many instances of one program (think a
+    browser with eight windows) collapse into a single `name ×N` header with the
+    summed memory and the *union* of their resources; expand it on demand instead
+    of hunting duplicates down a flat list;
   - every process carries a **human label** ("orbital = desktop server", "pcid = PCI
     driver manager") so you're never lost in cryptic names;
   - a **capability inspector** — select a process to see exactly which schemes/
     resources it holds open (from `sys:iostat`). Impossible to show on Windows.
+  - **force-kill** — select a stuck process and confirm to end it (SIGKILL, which
+    relibc routes to the kernel's unblockable ForceKill via `libredox`);
   - live refresh, memory + CPU time + owner + status, and a filter.
 - **Security** — a blake3 file-integrity **baseline** + diff (NEW/MODIFIED/REMOVED),
   a dangerous-permission **audit** (setuid/setgid/world-writable), and a
@@ -25,9 +31,11 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
 
 ## Headless self-test
 
-`eos-control --selftest` proves every read core without a display — the system/
-process snapshot and the security baseline/audit/digest — printing
-`EOS-CONTROL-SELFTEST-OK`. Used by boot probes and CI. On a host it reads `/proc`.
+`eos-control --selftest` proves every core without a display — the system/process
+snapshot, the byte-size math behind group memory sums, the security baseline/audit/
+digest, and the **force-kill path** (it spawns a throwaway child, kills it, and
+confirms it dies) — printing `EOS-CONTROL-SELFTEST-OK`. Used by boot probes and CI.
+On a host it reads `/proc`.
 
 ## Building
 
