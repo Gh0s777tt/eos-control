@@ -25,8 +25,8 @@ pub fn run() -> Result<(), String> {
 /// dead); the actions are proven by the render test, where clicking Reboot
 /// actually reboots the VM.
 fn power_core() -> Result<(), String> {
-    let _reboot: fn() -> Result<(), String> = sys::reboot;
-    let _shutdown: fn() -> Result<(), String> = sys::shutdown;
+    let _reboot: fn(&str) -> Result<(), String> = sys::reboot;
+    let _shutdown: fn(&str) -> Result<(), String> = sys::shutdown;
     Ok(())
 }
 

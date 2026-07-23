@@ -213,49 +213,49 @@ fn storage_from(f_bsize: u64, f_blocks: u64, f_bavail: u64) -> Storage {
     }
 }
 
-/// Power the machine off. The power control `sys:kstop` is root-only, and
-/// eos-control runs as the desktop user — a direct write gets EPERM. So we run
-/// coreutils `shutdown` through `sudo`: the desktop user is in the `sudo` group
-/// with an empty password, and sudo reads its password from **stdin**, so we
-/// feed an empty line and it elevates without a TTY. `shutdown` (as root) then
-/// writes `sys:kstop` and the machine goes down.
-pub fn shutdown() -> Result<(), String> {
-    power("")
+/// Power the machine off. The control `sys:kstop` is root-only and eos-control
+/// runs as the desktop user, so we hand the request to the `eos-power` shim with
+/// the user's `password` piped on its stdin; the shim elevates via `/scheme/sudo`
+/// and writes `sys:kstop`. See `src/power.rs`.
+pub fn shutdown(password: &str) -> Result<(), String> {
+    power("shutdown", password)
 }
 
-/// Reboot the machine — `shutdown -r`, same privileged path as [`shutdown`].
-pub fn reboot() -> Result<(), String> {
-    power("-r")
+/// Reboot the machine — same privileged `eos-power` path as [`shutdown`].
+pub fn reboot(password: &str) -> Result<(), String> {
+    power("reboot", password)
 }
 
-/// Spawn `sudo shutdown [flag]`, feeding an empty password to sudo's stdin.
-/// Redox-only: on a host this is a guarded no-op so the GUI can never take down
-/// a developer's machine.
+/// Spawn `eos-power <action>`, pipe `password` to its stdin, and wait for it.
+/// A correct password → the shim writes `sys:kstop` and the machine goes down;
+/// a wrong one → the shim exits non-zero and we surface it. Redox-only; on a
+/// host this is a guarded no-op so the GUI can never halt a developer's box.
 #[cfg(target_os = "redox")]
-fn power(flag: &str) -> Result<(), String> {
+fn power(action: &str, password: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let mut cmd = Command::new("sudo");
-    cmd.arg("shutdown");
-    if !flag.is_empty() {
-        cmd.arg(flag);
-    }
-    let mut child = cmd
+    let mut child = Command::new("eos-power")
+        .arg(action)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("sudo: {e}"))?;
-    // The desktop user has no password; an empty line satisfies sudo's prompt.
+        .map_err(|e| format!("nie można uruchomić eos-power: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(b"\n");
+        let _ = writeln!(stdin, "{password}");
     }
-    // Don't wait — the machine goes down once shutdown writes sys:kstop.
-    Ok(())
+    // eos-power is short-lived: on success it writes sys:kstop (machine down);
+    // on a bad password it exits fast. Waiting lets us report a bad password
+    // without leaving the button in limbo.
+    match child.wait() {
+        Ok(st) if st.success() => Ok(()),
+        Ok(_) => Err("błędne hasło lub brak uprawnień".into()),
+        Err(e) => Err(format!("eos-power: {e}")),
+    }
 }
 
 #[cfg(not(target_os = "redox"))]
-fn power(_flag: &str) -> Result<(), String> {
+fn power(_action: &str, _password: &str) -> Result<(), String> {
     Err("dostępne tylko na E-OS".into())
 }
 

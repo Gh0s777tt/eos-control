@@ -82,6 +82,7 @@ export component MainWindow inherits Window {
     // Power — a two-step confirm each, so a stray click can't halt the machine.
     in-out property <bool> confirm-reboot: false;
     in-out property <bool> confirm-shutdown: false;
+    in-out property <string> power-password;   // typed into the confirm field
     in property <string> power-status;
 
     callback refresh();
@@ -91,8 +92,8 @@ export component MainWindow inherits Window {
     callback kill(string);     // force-kill a process by pid
     callback baseline();
     callback scan();
-    callback reboot();     // write sys:kstop "reboot"
-    callback shutdown();   // write sys:kstop "shutdown"
+    callback reboot(string);     // (password) → eos-power reboot
+    callback shutdown(string);   // (password) → eos-power shutdown
 
     // Colour for a finding by kind: warn=red, modified=orange, new=amber,
     // removed=muted, ok=text.
@@ -351,30 +352,37 @@ export component MainWindow inherits Window {
                 spacing: 14px;
                 Text { text: "Zasilanie systemu"; color: #f2e9e9; font-size: 24px; }
                 Text {
-                    text: "Zamknij lub uruchom E-OS ponownie. Niezapisana praca zostanie utracona — każda akcja wymaga potwierdzenia.";
+                    text: "Zamknij lub uruchom E-OS ponownie. Niezapisana praca zostanie utracona — potwierdź i podaj swoje hasło (akcja wymaga uprawnień).";
                     color: #8a6f6f; font-size: 12px; wrap: word-wrap;
+                }
+                // Password appears only once an action is armed.
+                if root.confirm-reboot || root.confirm-shutdown: LineEdit {
+                    placeholder-text: "Hasło użytkownika";
+                    input-type: password;
+                    text <=> root.power-password;
+                    width: 260px;
                 }
                 HorizontalLayout {
                     spacing: 12px;
-                    if !root.confirm-reboot: Button {
+                    if !root.confirm-reboot && !root.confirm-shutdown: Button {
                         text: "Uruchom ponownie";
-                        clicked => { root.confirm-reboot = true; root.confirm-shutdown = false; }
+                        clicked => { root.confirm-reboot = true; }
+                    }
+                    if !root.confirm-reboot && !root.confirm-shutdown: Button {
+                        text: "Wyłącz";
+                        clicked => { root.confirm-shutdown = true; }
                     }
                     if root.confirm-reboot: Button {
                         text: "⚠ Potwierdź restart";
-                        clicked => { root.reboot(); root.confirm-reboot = false; }
-                    }
-                    if !root.confirm-shutdown: Button {
-                        text: "Wyłącz";
-                        clicked => { root.confirm-shutdown = true; root.confirm-reboot = false; }
+                        clicked => { root.reboot(root.power-password); root.confirm-reboot = false; root.power-password = ""; }
                     }
                     if root.confirm-shutdown: Button {
                         text: "⚠ Potwierdź wyłączenie";
-                        clicked => { root.shutdown(); root.confirm-shutdown = false; }
+                        clicked => { root.shutdown(root.power-password); root.confirm-shutdown = false; root.power-password = ""; }
                     }
                     if root.confirm-reboot || root.confirm-shutdown: Button {
                         text: "Anuluj";
-                        clicked => { root.confirm-reboot = false; root.confirm-shutdown = false; }
+                        clicked => { root.confirm-reboot = false; root.confirm-shutdown = false; root.power-password = ""; }
                     }
                     Rectangle { }
                 }

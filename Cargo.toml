@@ -6,10 +6,17 @@ license = "AGPL-3.0-or-later"
 description = "E-OS Control — unified Crimson control center (system, processes + capabilities, security)"
 repository = "https://gitlab.com/e-os/eos-control"
 build = "build.rs"
+default-run = "eos-control"
 
 [[bin]]
 name = "eos-control"
 path = "src/main.rs"
+
+# Privileged power shim (reboot/shutdown): elevates via /scheme/sudo, then writes
+# sys:kstop. Standalone so the GUI never runs as root — see src/power.rs.
+[[bin]]
+name = "eos-power"
+path = "src/power.rs"
 
 [dependencies]
 # Security tab: blake3 file-integrity hashing (default-features off drops the
@@ -33,7 +40,10 @@ slint-build = "1.17"
 # (the raw syscall crate dropped `kill`); relibc maps it to the kernel ForceKill.
 # On a host it's POSIX kill(2) via libc.
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = "0.1"
+# `mkns` unlocks the namespace ops the /scheme/sudo elevation needs (eos-power).
+libredox = { version = "0.1.18", features = ["mkns"] }
+# Imported as `syscall` (its lib name) — for CallFlags::FD in the elevation.
+redox_syscall = "0.9"
 
 [target.'cfg(not(target_os = "redox"))'.dependencies]
 libc = "0.2"

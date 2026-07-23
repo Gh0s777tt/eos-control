@@ -272,24 +272,23 @@ pub fn run() {
         // Power actions: write sys:kstop — the machine goes down right after.
         // The two-step confirm lives in the UI, so we just act.
         let weak = win.as_weak();
-        win.on_reboot(move || {
+        win.on_reboot(move |password| {
             let Some(w) = weak.upgrade() else { return };
-            // `sys::reboot` hands the request to `sudo shutdown -r`. If elevation
-            // succeeds the machine goes down; if it can't (the GUI has no TTY for
-            // sudo's prompt) nothing happens — so we report honestly rather than
-            // claim a reboot that may not occur. See docs / R-D11.
-            w.set_power_status(SharedString::from(match sys::reboot() {
-                Ok(()) => "Wysłano żądanie restartu. Jeśli system nie zareaguje, w terminalu: sudo shutdown -r".to_string(),
+            // `sys::reboot` runs the `eos-power` shim with this password and
+            // waits: Ok means it authenticated and wrote sys:kstop (the machine
+            // is going down); Err carries a bad-password / permission message.
+            w.set_power_status(SharedString::from(match sys::reboot(&password) {
+                Ok(()) => "Ponowne uruchamianie…".to_string(),
                 Err(e) => format!("Nie udało się: {e}"),
             }));
         });
     }
     {
         let weak = win.as_weak();
-        win.on_shutdown(move || {
+        win.on_shutdown(move |password| {
             let Some(w) = weak.upgrade() else { return };
-            w.set_power_status(SharedString::from(match sys::shutdown() {
-                Ok(()) => "Wysłano żądanie wyłączenia. Jeśli system nie zareaguje, w terminalu: sudo shutdown".to_string(),
+            w.set_power_status(SharedString::from(match sys::shutdown(&password) {
+                Ok(()) => "Wyłączanie…".to_string(),
                 Err(e) => format!("Nie udało się: {e}"),
             }));
         });
