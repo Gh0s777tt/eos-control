@@ -274,9 +274,13 @@ pub fn run() {
         let weak = win.as_weak();
         win.on_reboot(move || {
             let Some(w) = weak.upgrade() else { return };
+            // `sys::reboot` hands the request to `sudo shutdown -r`. If elevation
+            // succeeds the machine goes down; if it can't (the GUI has no TTY for
+            // sudo's prompt) nothing happens — so we report honestly rather than
+            // claim a reboot that may not occur. See docs / R-D11.
             w.set_power_status(SharedString::from(match sys::reboot() {
-                Ok(()) => "Ponowne uruchamianie…".to_string(),
-                Err(e) => format!("Błąd restartu: {e}"),
+                Ok(()) => "Wysłano żądanie restartu. Jeśli system nie zareaguje, w terminalu: sudo shutdown -r".to_string(),
+                Err(e) => format!("Nie udało się: {e}"),
             }));
         });
     }
@@ -285,8 +289,8 @@ pub fn run() {
         win.on_shutdown(move || {
             let Some(w) = weak.upgrade() else { return };
             w.set_power_status(SharedString::from(match sys::shutdown() {
-                Ok(()) => "Wyłączanie…".to_string(),
-                Err(e) => format!("Błąd wyłączenia: {e}"),
+                Ok(()) => "Wysłano żądanie wyłączenia. Jeśli system nie zareaguje, w terminalu: sudo shutdown".to_string(),
+                Err(e) => format!("Nie udało się: {e}"),
             }));
         });
     }
