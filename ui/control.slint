@@ -66,12 +66,25 @@ export component MainWindow inherits Window {
     in-out property <string> roots: "/usr/bin, /etc";
     in property <string> sec-status: "Ustaw wzorzec, potem skanuj.";
 
-    // Network
+    // Network — live config (read from the netcfg: scheme).
+    in property <string> net-iface: "—";
     in property <string> net-ip: "—";
     in property <string> net-gateway: "—";
     in property <string> net-dns: "—";
     in property <string> net-subnet: "—";
+    in property <string> net-mac: "—";
     in property <string> net-stack: "—";
+    // Network — static edit form. The set-* fields two-way-bind the LineEdits;
+    // Rust pre-fills them once with the current values, so the user edits from
+    // the live config. Applying is a two-step confirm (like Power) and needs the
+    // password — the write goes to the root-only netcfg: scheme via eos-netcfg.
+    in-out property <string> net-set-ip;
+    in-out property <string> net-set-prefix;
+    in-out property <string> net-set-gateway;
+    in-out property <string> net-set-dns;
+    in-out property <string> net-password;
+    in-out property <bool> net-confirm: false;
+    in property <string> net-status;
 
     // Storage (root filesystem)
     in property <string> disk-total: "—";
@@ -101,6 +114,7 @@ export component MainWindow inherits Window {
     callback shutdown(string);   // (password) → eos-power shutdown
     callback set-volume(float);  // Sound-tab slider → audio:volume (cast to int in Rust)
     callback toggle-mute();      // mute (→0) / unmute (→ remembered level)
+    callback net-apply();        // apply the static IP/gateway/DNS via eos-netcfg
 
     // Colour for a finding by kind: warn=red, modified=orange, new=amber,
     // removed=muted, ok=text.
@@ -306,26 +320,87 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── Network (live config + stack status) ─────────────────
+        // ── Network (live config + static edit) ──────────────────
         Tab {
             title: "Sieć";
             VerticalLayout {
                 padding: 16px;
-                spacing: 14px;
+                spacing: 12px;
                 Text { text: "Konfiguracja sieci"; color: #f2e9e9; font-size: 24px; }
+                // Live config read from the netcfg: scheme.
                 HorizontalLayout {
                     spacing: 12px;
+                    Tile { caption: "Interfejs"; value: root.net-iface; }
                     Tile { caption: "Adres IP"; value: root.net-ip; }
+                    Tile { caption: "Maska podsieci"; value: root.net-subnet; }
                     Tile { caption: "Brama"; value: root.net-gateway; }
                     Tile { caption: "DNS"; value: root.net-dns; }
-                    Tile { caption: "Maska podsieci"; value: root.net-subnet; }
                 }
-                Rectangle { }   // spacer
-                HorizontalLayout {
-                    Text { text: "Stos sieciowy: " + root.net-stack; color: #8a6f6f; font-size: 11px; }
-                    Rectangle { }
-                    Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                Text {
+                    text: "MAC: " + root.net-mac + "   ·   Stos sieciowy: " + root.net-stack;
+                    color: #8a6f6f; font-size: 11px;
                 }
+
+                // Static configuration editor. Empty Brama/DNS = leave unchanged.
+                Rectangle {
+                    background: #160404;
+                    border-radius: 8px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text { text: "Ustaw statyczny adres"; color: #e50914; font-size: 13px; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                spacing: 3px;
+                                Text { text: "Adres IP"; color: #8a6f6f; font-size: 10px; }
+                                LineEdit { placeholder-text: "10.0.2.15"; text <=> root.net-set-ip; }
+                            }
+                            VerticalLayout {
+                                spacing: 3px;
+                                width: 90px;
+                                Text { text: "Prefiks (/N)"; color: #8a6f6f; font-size: 10px; }
+                                LineEdit { placeholder-text: "24"; text <=> root.net-set-prefix; }
+                            }
+                            VerticalLayout {
+                                spacing: 3px;
+                                Text { text: "Brama"; color: #8a6f6f; font-size: 10px; }
+                                LineEdit { placeholder-text: "10.0.2.2"; text <=> root.net-set-gateway; }
+                            }
+                            VerticalLayout {
+                                spacing: 3px;
+                                Text { text: "DNS"; color: #8a6f6f; font-size: 10px; }
+                                LineEdit { placeholder-text: "9.9.9.9"; text <=> root.net-set-dns; }
+                            }
+                        }
+                        // Password appears only once Apply is armed (like Power).
+                        if root.net-confirm: LineEdit {
+                            placeholder-text: "Hasło użytkownika (wymaga uprawnień)";
+                            input-type: password;
+                            text <=> root.net-password;
+                            width: 320px;
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            if !root.net-confirm: Button {
+                                text: "Zastosuj (statyczne)";
+                                clicked => { root.net-confirm = true; }
+                            }
+                            if root.net-confirm: Button {
+                                text: "⚠ Potwierdź zmianę sieci";
+                                clicked => { root.net-apply(); }
+                            }
+                            if root.net-confirm: Button {
+                                text: "Anuluj";
+                                clicked => { root.net-confirm = false; root.net-password = ""; }
+                            }
+                            Rectangle { }
+                            Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                        }
+                        Text { text: root.net-status; color: #e50914; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                Rectangle { }   // spacer pushes the editor up
             }
         }
 

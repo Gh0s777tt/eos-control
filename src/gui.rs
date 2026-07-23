@@ -168,13 +168,17 @@ fn refresh(win: &MainWindow, state: &State) {
         ov.processes, mem_total
     )));
 
-    // Network tab: the current /etc/net config + whether the stack is up.
+    // Network tab: the live netcfg config + whether the stack is up. Only the
+    // display fields are set here; the static-edit fields are pre-filled once in
+    // `run()` so a periodic refresh can't clobber what the user is typing.
     let net = sys::net();
     let dash = |s: &str| SharedString::from(if s.is_empty() { "—" } else { s });
+    win.set_net_iface(dash(&net.iface));
     win.set_net_ip(dash(&net.ip));
     win.set_net_gateway(dash(&net.gateway));
     win.set_net_dns(dash(&net.dns));
     win.set_net_subnet(dash(&net.subnet));
+    win.set_net_mac(dash(&net.mac));
     win.set_net_stack(SharedString::from(if net.stack_up {
         "aktywny"
     } else {
@@ -219,6 +223,21 @@ pub fn run() {
     }));
     let win = MainWindow::new().expect("eos-control: cannot create the window");
     refresh(&win, &state.borrow());
+
+    // Pre-fill the static-edit fields once from the current config, so the user
+    // edits from the live values. Done here (not in `refresh`) so the 3 s timer
+    // never overwrites in-progress typing.
+    {
+        let n0 = sys::net();
+        win.set_net_set_ip(SharedString::from(n0.ip.as_str()));
+        win.set_net_set_prefix(SharedString::from(
+            sys::netmask_to_prefix(&n0.subnet)
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+        ));
+        win.set_net_set_gateway(SharedString::from(n0.gateway.as_str()));
+        win.set_net_set_dns(SharedString::from(n0.dns.as_str()));
+    }
 
     {
         let (weak, state) = (win.as_weak(), state.clone());
@@ -344,6 +363,38 @@ pub fn run() {
             if let Some(w) = weak.upgrade() {
                 refresh(&w, &state.borrow());
             }
+        });
+    }
+    {
+        // Network: apply the static config. Reads the edit fields, parses the
+        // prefix, and hands the change to `sys::apply_static` (→ eos-netcfg shim
+        // with the password on stdin). The two-step confirm lives in the UI.
+        let (weak, state) = (win.as_weak(), state.clone());
+        win.on_net_apply(move || {
+            let Some(w) = weak.upgrade() else { return };
+            // An unparseable prefix becomes -1, which apply_static rejects with a
+            // clear "out of range" message rather than silently defaulting.
+            let prefix: i32 = w
+                .get_net_set_prefix()
+                .to_string()
+                .trim()
+                .parse()
+                .unwrap_or(-1);
+            let msg = match sys::apply_static(
+                &w.get_net_iface().to_string(),
+                &w.get_net_set_ip().to_string(),
+                prefix,
+                &w.get_net_set_gateway().to_string(),
+                &w.get_net_set_dns().to_string(),
+                &w.get_net_password().to_string(),
+            ) {
+                Ok(()) => "Zastosowano konfigurację sieci.".to_string(),
+                Err(e) => format!("Nie udało się: {e}"),
+            };
+            w.set_net_status(SharedString::from(msg));
+            w.set_net_confirm(false);
+            w.set_net_password(SharedString::from(""));
+            refresh(&w, &state.borrow());
         });
     }
 

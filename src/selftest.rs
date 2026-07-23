@@ -68,21 +68,85 @@ fn storage_core() -> Result<(), String> {
     Ok(())
 }
 
-/// Network: reading the `/etc/net` config + the scheme probe must not panic.
-/// Where the image actually ships a config (`/etc/net/ip` present, i.e. on
-/// E-OS) the address must come back non-empty; on a bare host the files are
-/// absent so this is a no-op rather than a failure.
+/// Network: the read core (live netcfg + `/etc/net` fallback) must not panic,
+/// and every pure helper behind the Sieć tab's static editor must behave — those
+/// helpers gate what we hand the privileged `eos-netcfg` shim, so they carry the
+/// correctness weight the render test can't reach headlessly. `apply_static`
+/// itself is only *referenced* (calling it with valid input would spawn the shim
+/// and reconfigure the running network mid-boot); we exercise its **validation**
+/// path with known-bad input, which rejects before any spawn.
 fn net_core() -> Result<(), String> {
     let net = sys::net();
     // Touch every field so the read core is exercised end to end (and the
     // CLI-only build doesn't flag the GUI-read fields as dead).
     let _summary = format!(
-        "ip={} gw={} dns={} mask={} stack={}",
-        net.ip, net.gateway, net.dns, net.subnet, net.stack_up
+        "iface={} ip={} gw={} dns={} mask={} mac={} stack={}",
+        net.iface, net.ip, net.gateway, net.dns, net.subnet, net.mac, net.stack_up
     );
     if std::path::Path::new("/etc/net/ip").exists() && net.ip.is_empty() {
         return Err("/etc/net/ip is present but sys::net() read no address".into());
     }
+
+    // addr/list parse: a real CIDR splits; placeholders + an out-of-range prefix
+    // are rejected so they can't masquerade as an address.
+    if sys::parse_addr_list("10.0.2.15/24") != Some(("10.0.2.15".to_string(), 24)) {
+        return Err("parse_addr_list did not split a valid CIDR".into());
+    }
+    if sys::parse_addr_list("Not configured").is_some()
+        || sys::parse_addr_list("10.0.2.15/40").is_some()
+    {
+        return Err("parse_addr_list accepted a placeholder / out-of-range prefix".into());
+    }
+
+    // prefix ↔ netmask must round-trip and hit the edges.
+    if sys::prefix_to_netmask(24) != "255.255.255.0"
+        || sys::prefix_to_netmask(0) != "0.0.0.0"
+        || sys::prefix_to_netmask(32) != "255.255.255.255"
+        || sys::prefix_to_netmask(25) != "255.255.255.128"
+    {
+        return Err("prefix_to_netmask produced a wrong mask".into());
+    }
+    if sys::netmask_to_prefix("255.255.255.0") != Some(24)
+        || sys::netmask_to_prefix("255.255.255.255") != Some(32)
+        || sys::netmask_to_prefix("0.0.0.0") != Some(0)
+        || sys::netmask_to_prefix("255.0.255.0").is_some()
+    // non-contiguous → rejected
+    {
+        return Err("netmask_to_prefix mishandled a mask".into());
+    }
+
+    // IP + prefix validators.
+    if !sys::valid_ipv4("10.0.2.2") || sys::valid_ipv4("999.0.0.1") || sys::valid_ipv4("") {
+        return Err("valid_ipv4 misjudged an address".into());
+    }
+    if !sys::valid_prefix(24) || sys::valid_prefix(33) || sys::valid_prefix(-1) {
+        return Err("valid_prefix misjudged a prefix".into());
+    }
+
+    // Default gateway extraction from a route/list dump.
+    let routes =
+        "default  via 10.0.2.2 dev eth0 src 10.0.2.15\n10.0.2.0/24  dev eth0 src 10.0.2.15\n";
+    if sys::parse_default_gateway(routes).as_deref() != Some("10.0.2.2") {
+        return Err("parse_default_gateway missed the default route's via".into());
+    }
+    if sys::parse_default_gateway("10.0.2.0/24 dev eth0 src 10.0.2.15").is_some() {
+        return Err("parse_default_gateway invented a gateway with no default route".into());
+    }
+
+    // Validation must reject bad input *before* spawning the shim — three
+    // representative failures (bad ip / prefix / gateway).
+    if sys::apply_static("eth0", "not-an-ip", 24, "", "", "x").is_ok() {
+        return Err("apply_static accepted a bad IP".into());
+    }
+    if sys::apply_static("eth0", "10.0.0.5", 40, "", "", "x").is_ok() {
+        return Err("apply_static accepted an out-of-range prefix".into());
+    }
+    if sys::apply_static("eth0", "10.0.0.5", 24, "garbage", "", "x").is_ok() {
+        return Err("apply_static accepted a bad gateway".into());
+    }
+    // Reference the setter without a valid-input call (that would reconfigure the
+    // live network); the render test proves the apply end to end.
+    let _apply: fn(&str, &str, i32, &str, &str, &str) -> Result<(), String> = sys::apply_static;
     Ok(())
 }
 

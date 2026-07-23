@@ -4,12 +4,15 @@
 //! as the desktop user. Rather than elevate the whole GUI process (risky), the
 //! GUI spawns this shim, pipes the user's password to its **stdin** (so there is
 //! no TTY-password problem), and lets *this* short-lived process do the
-//! elevation — exactly the way `sudo` does it internally: open `/scheme/sudo`,
-//! write the password (the daemon checks sudo-group membership + the password),
-//! then elevate our own process fd and switch namespaces. Once root, we write
+//! elevation via the shared [`elevate::to_root`] handshake. Once root, we write
 //! `sys:kstop` and the machine goes down.
 //!
 //! Usage: `echo "$password" | eos-power reboot|shutdown`.
+
+// The sudo → procfd → setns elevation is shared with `eos-netcfg`; both shims
+// pull in the one audited copy rather than duplicating the handshake.
+#[path = "elevate.rs"]
+mod elevate;
 
 use std::io::Read;
 
@@ -43,35 +46,8 @@ fn main() {
 /// Elevate via `/scheme/sudo`, then write `sys:kstop`. Redox-only.
 #[cfg(target_os = "redox")]
 fn run(password: &str, action: &str) -> Result<(), String> {
-    use libredox::flag::O_CLOEXEC;
-
-    // relibc hands us the fd of our own process for the elevation handshake.
-    unsafe extern "C" {
-        safe fn redox_cur_procfd_v0() -> usize;
-    }
-
-    let file = libredox::Fd::open("/scheme/sudo", O_CLOEXEC, 0)
-        .map_err(|e| format!("nie można otworzyć /scheme/sudo: {e}"))?;
-
-    // The sudo daemon verifies sudo-group membership + this password.
-    file.write(password.as_bytes())
-        .map_err(|_| "błędne hasło lub użytkownik spoza grupy sudo".to_string())?;
-
-    // Elevate our own process with the daemon's help (pass our procfd).
-    file.call_wo(
-        &libredox::call::dup(redox_cur_procfd_v0(), &[])
-            .map_err(|e| format!("dup(procfd): {e}"))?
-            .to_ne_bytes(),
-        syscall::CallFlags::FD,
-        &[],
-    )
-    .map_err(|e| format!("elevacja: {e}"))?;
-
-    // Switch into the elevated namespace the daemon prepared.
-    let ns = file
-        .openat("ns", O_CLOEXEC, 0)
-        .map_err(|e| format!("openat(ns): {e}"))?;
-    libredox::call::setns(ns.into_raw()).map_err(|e| format!("setns: {e}"))?;
+    // Become root; keep the sudo fd alive until the privileged write returns.
+    let _sudo = elevate::to_root(password)?;
 
     // Now root: write the power control. The machine goes down here.
     std::fs::write("/scheme/sys/kstop", action.as_bytes()).map_err(|e| format!("sys:kstop: {e}"))

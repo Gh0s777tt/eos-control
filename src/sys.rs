@@ -136,46 +136,253 @@ pub fn processes() -> Vec<Proc> {
 
 /// Network configuration + stack status, shown on the Network tab.
 ///
-/// Reads the `/etc/net/*` files the base image ships (dhcpd keeps them current)
-/// and probes the scheme list to tell whether the TCP/IP stack is up. These are
-/// plain file/dir reads, identical on E-OS and on a host — on a host the files
-/// are absent so every field simply degrades to empty / `stack_up = false`.
+/// Reads the **live** `netcfg:` scheme smolnetd serves — the authoritative
+/// running config — and falls back to the persistent `/etc/net/*` files the base
+/// image ships (which dhcpd keeps current) when the scheme is unreadable. The
+/// scheme layout was recon'd from the smolnetd source (`netcfg` `cfg_node!`
+/// tree): `ifaces` lists interfaces; `ifaces/<iface>/addr/list` gives `ip/prefix`
+/// (or the placeholders "Not configured" / "Device not found"); `route/list`
+/// carries the routing table; `resolv/nameserver` the DNS resolver; and
+/// `ifaces/<iface>/mac` the hardware address. All plain reads — on a host both
+/// the scheme and the files are absent so every field degrades to empty /
+/// `stack_up = false`.
 #[derive(Clone, Debug, Default)]
 pub struct Net {
-    /// Interface address, from `/etc/net/ip` (e.g. `10.0.2.15`).
+    /// Interface name, e.g. `eth0` (smolnetd currently serves a single `eth0`).
+    pub iface: String,
+    /// Interface IPv4 address, e.g. `10.0.2.15`.
     pub ip: String,
-    /// Default gateway, from `/etc/net/ip_router`.
+    /// Default gateway (the default route's `via`, else `/etc/net/ip_router`).
     pub gateway: String,
-    /// DNS resolver, from `/etc/net/dns`.
+    /// DNS resolver.
     pub dns: String,
-    /// Subnet mask, from `/etc/net/ip_subnet`.
+    /// Subnet mask, derived from the live prefix or read from `/etc/net/ip_subnet`.
     pub subnet: String,
+    /// Interface hardware (MAC) address, informational; empty if unavailable.
+    pub mac: String,
     /// True when the `ip` scheme is present — i.e. netstack/smolnetd is running.
     pub stack_up: bool,
 }
 
-/// Read the current network configuration + stack status. Never panics; any
-/// unreadable source degrades to empty / `false`.
+/// Read a single-line `netcfg:` value, mapping smolnetd's placeholder strings
+/// ("Not configured", "Device not found") and unreadable/empty results to
+/// `None`, so a placeholder can never masquerade as a real value.
+fn read_netcfg(path: &str) -> Option<String> {
+    let s = std::fs::read_to_string(path).ok()?;
+    let s = s.trim();
+    if s.is_empty() || s == "Not configured" || s == "Device not found" {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Parse the netcfg `ifaces/<iface>/addr/list` payload (`"10.0.2.15/24"`) into
+/// `(ip, prefix)`. `None` for a non-CIDR value (placeholders included), so the
+/// caller can fall back rather than show garbage.
+pub fn parse_addr_list(s: &str) -> Option<(String, u8)> {
+    let (ip, prefix) = s.trim().split_once('/')?;
+    let ip: std::net::Ipv4Addr = ip.trim().parse().ok()?;
+    let prefix: u8 = prefix.trim().parse().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    Some((ip.to_string(), prefix))
+}
+
+/// Convert an IPv4 prefix length (0–32) to a dotted netmask (`24` → `255.255.255.0`).
+pub fn prefix_to_netmask(prefix: u8) -> String {
+    let p = prefix.min(32) as u32;
+    // p == 0 → 0.0.0.0; a plain `MAX << 32` would overflow-panic, so special-case
+    // it. For 1..=32 the shift amount is 0..=31, always in range.
+    let bits: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+    let o = bits.to_be_bytes();
+    format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
+}
+
+/// True if `s` parses as an IPv4 address.
+pub fn valid_ipv4(s: &str) -> bool {
+    s.trim().parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+/// True if `p` is a valid IPv4 prefix length (0–32).
+pub fn valid_prefix(p: i32) -> bool {
+    (0..=32).contains(&p)
+}
+
+/// Convert a dotted netmask to a prefix length (`255.255.255.0` → `24`). `None`
+/// if it isn't a canonical mask (contiguous ones followed by zeros) — used only
+/// to pre-fill the edit form's prefix box, so a weird mask just leaves it blank.
+pub fn netmask_to_prefix(mask: &str) -> Option<u8> {
+    let addr: std::net::Ipv4Addr = mask.trim().parse().ok()?;
+    let bits = u32::from(addr);
+    let ones = bits.leading_ones();
+    // Reject non-contiguous masks: the ones-count must reconstruct the value.
+    let canonical = if ones == 0 {
+        0
+    } else {
+        u32::MAX << (32 - ones)
+    };
+    if bits == canonical {
+        Some(ones as u8)
+    } else {
+        None
+    }
+}
+
+/// Pull the default-route gateway out of the netcfg `route/list` dump. Lines
+/// read `default  via 10.0.2.2 dev eth0 src 10.0.2.15` (non-default routes have
+/// no `via`); we take the `via` token from the `default` line.
+pub fn parse_default_gateway(route_list: &str) -> Option<String> {
+    for line in route_list.lines() {
+        if !line.trim_start().starts_with("default") {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        while let Some(tok) = it.next() {
+            if tok == "via" {
+                return it.next().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
+/// Read the current network configuration + stack status. Prefers the live
+/// `netcfg:` scheme, falls back to `/etc/net/*`. Never panics; any unreadable
+/// source degrades to empty / `false`.
 pub fn net() -> Net {
-    let read = |p: &str| {
+    let file = |p: &str| {
         std::fs::read_to_string(p)
             .unwrap_or_default()
             .trim()
             .to_string()
     };
+
+    // Interface: the first name smolnetd lists (it serves a single `eth0`);
+    // default to `eth0` when the scheme isn't up.
+    let iface = read_netcfg("/scheme/netcfg/ifaces")
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "eth0".to_string());
+
+    // Live address (authoritative) → ip + derived netmask; else the /etc/net files.
+    let (ip, subnet) = match read_netcfg(&format!("/scheme/netcfg/ifaces/{iface}/addr/list"))
+        .as_deref()
+        .and_then(parse_addr_list)
+    {
+        Some((ip, prefix)) => (ip, prefix_to_netmask(prefix)),
+        None => (file("/etc/net/ip"), file("/etc/net/ip_subnet")),
+    };
+
+    // Gateway: the default route's `via`, else the persistent router file.
+    let gateway = read_netcfg("/scheme/netcfg/route/list")
+        .as_deref()
+        .and_then(parse_default_gateway)
+        .unwrap_or_else(|| file("/etc/net/ip_router"));
+
+    // DNS resolver: the live resolver, else the persistent file.
+    let dns =
+        read_netcfg("/scheme/netcfg/resolv/nameserver").unwrap_or_else(|| file("/etc/net/dns"));
+
+    // MAC (informational).
+    let mac = read_netcfg(&format!("/scheme/netcfg/ifaces/{iface}/mac")).unwrap_or_default();
+
     // The `ip` scheme only appears once netstack has registered it; listing
     // `/scheme` is the reliable probe (statting `/scheme/ip` directly is a
     // socket op, not a file op). On a host `/scheme` is absent → false.
     let stack_up = std::fs::read_dir("/scheme")
         .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.file_name() == "ip"))
         .unwrap_or(false);
+
     Net {
-        ip: read("/etc/net/ip"),
-        gateway: read("/etc/net/ip_router"),
-        dns: read("/etc/net/dns"),
-        subnet: read("/etc/net/ip_subnet"),
+        iface,
+        ip,
+        gateway,
+        dns,
+        subnet,
+        mac,
         stack_up,
     }
+}
+
+/// Apply a **static** IPv4 configuration to the running stack. Validates every
+/// field with the pure helpers, then hands the write to the privileged
+/// `eos-netcfg` shim (the `netcfg:` scheme rejects non-root writers with
+/// `EACCES`) with the user's `password` piped on its stdin — so the GUI never
+/// runs as root. Empty `gateway`/`dns` are left unchanged. Errors (bad input,
+/// bad password, no shim) are surfaced, never panicked.
+pub fn apply_static(
+    iface: &str,
+    ip: &str,
+    prefix: i32,
+    gateway: &str,
+    dns: &str,
+    password: &str,
+) -> Result<(), String> {
+    let (ip, gateway, dns) = (ip.trim(), gateway.trim(), dns.trim());
+    if !valid_ipv4(ip) {
+        return Err(format!("nieprawidłowy adres IP: {ip}"));
+    }
+    if !valid_prefix(prefix) {
+        return Err(format!("prefiks poza zakresem 0–32: {prefix}"));
+    }
+    if !gateway.is_empty() && !valid_ipv4(gateway) {
+        return Err(format!("nieprawidłowy adres bramy: {gateway}"));
+    }
+    if !dns.is_empty() && !valid_ipv4(dns) {
+        return Err(format!("nieprawidłowy adres DNS: {dns}"));
+    }
+    let iface = iface.trim();
+    let iface = if iface.is_empty() { "eth0" } else { iface };
+    apply_static_impl(iface, ip, prefix, gateway, dns, password)
+}
+
+/// Spawn `eos-netcfg <iface> <ip> <prefix> <gw|-> <dns|->`, pipe `password` to
+/// its stdin, and wait. Ok = the shim authenticated and applied the config;
+/// Err = bad password / no permission. Redox-only; on a host it is a guarded
+/// no-op so a developer's box is never reconfigured.
+#[cfg(target_os = "redox")]
+fn apply_static_impl(
+    iface: &str,
+    ip: &str,
+    prefix: i32,
+    gateway: &str,
+    dns: &str,
+    password: &str,
+) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    // `-` tells the shim to leave that field unchanged.
+    let gw = if gateway.is_empty() { "-" } else { gateway };
+    let dns_arg = if dns.is_empty() { "-" } else { dns };
+    let mut child = Command::new("eos-netcfg")
+        .args([iface, ip, &prefix.to_string(), gw, dns_arg])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("nie można uruchomić eos-netcfg: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{password}");
+    }
+    match child.wait() {
+        Ok(st) if st.success() => Ok(()),
+        Ok(_) => Err("błędne hasło lub brak uprawnień".into()),
+        Err(e) => Err(format!("eos-netcfg: {e}")),
+    }
+}
+
+#[cfg(not(target_os = "redox"))]
+fn apply_static_impl(
+    _iface: &str,
+    _ip: &str,
+    _prefix: i32,
+    _gateway: &str,
+    _dns: &str,
+    _password: &str,
+) -> Result<(), String> {
+    Err("dostępne tylko na E-OS".into())
 }
 
 /// Filesystem usage of the root mount, shown on the Storage tab. Sizes are in
