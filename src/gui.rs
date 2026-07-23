@@ -52,6 +52,9 @@ struct State {
     /// App names whose group is currently expanded. Groups are collapsed by
     /// default (tidy view): one "chrome ×8" row instead of eight scattered ones.
     expanded: HashSet<String>,
+    /// The level to restore when un-muting (audiod has no mute flag, so mute is
+    /// "set 0 and remember"). Seeded to a sensible default for a first un-mute.
+    audio_premute: i32,
 }
 
 /// Build a leaf (real process) row. `indent` marks it as nested under a group.
@@ -172,7 +175,11 @@ fn refresh(win: &MainWindow, state: &State) {
     win.set_net_gateway(dash(&net.gateway));
     win.set_net_dns(dash(&net.dns));
     win.set_net_subnet(dash(&net.subnet));
-    win.set_net_stack(SharedString::from(if net.stack_up { "aktywny" } else { "brak" }));
+    win.set_net_stack(SharedString::from(if net.stack_up {
+        "aktywny"
+    } else {
+        "brak"
+    }));
 
     // Storage tab: root-filesystem usage via statvfs.
     let st = sys::storage();
@@ -189,6 +196,12 @@ fn refresh(win: &MainWindow, state: &State) {
         win.set_disk_pct(SharedString::from(format!("{pct}%")));
     }
 
+    // Sound tab: audiod's master volume + whether the stack is up. When it isn't
+    // (no audiohw: driver) the tab shows the "unavailable" explanation instead.
+    let audio = sys::audio();
+    win.set_audio_available(audio.available);
+    win.set_audio_volume(audio.volume);
+
     // Processes tab: filtered, then grouped by app.
     let needle = state.filter.to_lowercase();
     let items = build_rows(sys::processes(), &needle, &state.expanded);
@@ -202,6 +215,7 @@ pub fn run() {
     let state = Rc::new(RefCell::new(State {
         filter: String::new(),
         expanded: HashSet::new(),
+        audio_premute: 50,
     }));
     let win = MainWindow::new().expect("eos-control: cannot create the window");
     refresh(&win, &state.borrow());
@@ -291,6 +305,45 @@ pub fn run() {
                 Ok(()) => "Wyłączanie…".to_string(),
                 Err(e) => format!("Nie udało się: {e}"),
             }));
+        });
+    }
+    {
+        // Sound: the slider fires as it moves; write the (rounded) 0–100 level to
+        // audiod, then refresh so the "%" tile tracks it.
+        let (weak, state) = (win.as_weak(), state.clone());
+        win.on_set_volume(move |v| {
+            let _ = sys::set_volume(v.round() as i32);
+            if let Some(w) = weak.upgrade() {
+                refresh(&w, &state.borrow());
+            }
+        });
+    }
+    {
+        // Mute/unmute. audiod has no mute flag, so mute = "set 0 and remember the
+        // level"; unmute restores it (or a sane 50 if we never had one). The
+        // borrows are scoped so they're dropped before refresh re-borrows.
+        let (weak, state) = (win.as_weak(), state.clone());
+        win.on_toggle_mute(move || {
+            let cur = sys::audio();
+            if cur.available {
+                if cur.volume > 0 {
+                    state.borrow_mut().audio_premute = cur.volume;
+                    let _ = sys::set_volume(0);
+                } else {
+                    let restore = {
+                        let s = state.borrow();
+                        if s.audio_premute > 0 {
+                            s.audio_premute
+                        } else {
+                            50
+                        }
+                    };
+                    let _ = sys::set_volume(restore);
+                }
+            }
+            if let Some(w) = weak.upgrade() {
+                refresh(&w, &state.borrow());
+            }
         });
     }
 

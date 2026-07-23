@@ -74,8 +74,7 @@ fn run(password: &str, action: &str) -> Result<(), String> {
     libredox::call::setns(ns.into_raw()).map_err(|e| format!("setns: {e}"))?;
 
     // Now root: write the power control. The machine goes down here.
-    std::fs::write("/scheme/sys/kstop", action.as_bytes())
-        .map_err(|e| format!("sys:kstop: {e}"))
+    std::fs::write("/scheme/sys/kstop", action.as_bytes()).map_err(|e| format!("sys:kstop: {e}"))
 }
 
 #[cfg(not(target_os = "redox"))]

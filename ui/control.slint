@@ -2,7 +2,7 @@
 // Palette: deep black #0c0202, panel #160404, blood red #e50914,
 // highlight #7a0a0a, text #f2e9e9, muted #8a6f6f.
 
-import { TabWidget, ListView, LineEdit, Button } from "std-widgets.slint";
+import { TabWidget, ListView, LineEdit, Button, Slider } from "std-widgets.slint";
 
 export struct ProcItem {
     pid: string,
@@ -79,6 +79,11 @@ export component MainWindow inherits Window {
     in property <string> disk-free: "—";
     in property <string> disk-pct: "—";
 
+    // Sound — audiod's master volume (0–100). `audio-available` is false when
+    // audiod isn't running (no audiohw: driver), and the tab says so plainly.
+    in property <bool> audio-available: false;
+    in property <int> audio-volume: 0;
+
     // Power — a two-step confirm each, so a stray click can't halt the machine.
     in-out property <bool> confirm-reboot: false;
     in-out property <bool> confirm-shutdown: false;
@@ -94,6 +99,8 @@ export component MainWindow inherits Window {
     callback scan();
     callback reboot(string);     // (password) → eos-power reboot
     callback shutdown(string);   // (password) → eos-power shutdown
+    callback set-volume(float);  // Sound-tab slider → audio:volume (cast to int in Rust)
+    callback toggle-mute();      // mute (→0) / unmute (→ remembered level)
 
     // Colour for a finding by kind: warn=red, modified=orange, new=amber,
     // removed=muted, ok=text.
@@ -340,6 +347,60 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     Rectangle { }
                     Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                }
+            }
+        }
+
+        // ── Sound (audiod master volume) ─────────────────────────
+        Tab {
+            title: "Dźwięk";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: "Dźwięk"; color: #f2e9e9; font-size: 24px; }
+
+                // audiod is live → the master-volume slider + mute drive it.
+                if root.audio-available: VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Tile { caption: "Głośność główna"; value: root.audio-volume + "%"; }
+                    }
+                    Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: root.audio-volume;
+                        // Fires as the knob moves; Rust casts the float to 0–100 int.
+                        changed(v) => { root.set-volume(v); }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Button {
+                            // Volume 0 == muted; offer the inverse action.
+                            text: root.audio-volume == 0 ? "Włącz dźwięk" : "Wycisz";
+                            clicked => { root.toggle-mute(); }
+                        }
+                        Rectangle { }
+                        Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                    }
+                }
+
+                // audiod not running (no audiohw: driver) — explain, don't fake a
+                // control that does nothing.
+                if !root.audio-available: VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Audio niedostępne — usługa audiod nie działa (brak sterownika audiohw:).";
+                        color: #ffcf5a; font-size: 13px; wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Na pętli QEMU sterownik Intel HD Audio (ihdad) nie kończy handshake'u RIRB, więc audiod nie startuje. Na sprzęcie z działającym HDA ta zakładka pokaże suwak głośności głównej.";
+                        color: #8a6f6f; font-size: 11px; wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        Rectangle { }
+                        Button { text: "Odśwież"; clicked => { root.refresh(); } }
+                    }
                 }
             }
         }

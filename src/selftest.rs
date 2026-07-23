@@ -15,7 +15,34 @@ pub fn run() -> Result<(), String> {
     kill_core()?;
     net_core()?;
     storage_core()?;
+    audio_core()?;
     power_core()?;
+    Ok(())
+}
+
+/// Audio: the volume read core + its parse/clamp helpers must behave, and must
+/// **not** move the real level at boot. `sys::set_volume` writes the daemon, so
+/// like the power actions it is only *referenced* here (proven live by the
+/// render test, where the Sound-tab slider drives it); the read path and the
+/// pure helpers are side-effect free, so we exercise those.
+fn audio_core() -> Result<(), String> {
+    // Pure helpers underpin every slider value we hand the daemon.
+    if sys::clamp_volume(150) != 100 || sys::clamp_volume(-5) != 0 || sys::clamp_volume(42) != 42 {
+        return Err("clamp_volume is out of the 0–100 range".into());
+    }
+    if sys::parse_volume(" 73 \n") != Some(73) {
+        return Err("parse_volume did not round-trip the daemon's format".into());
+    }
+    if sys::parse_volume("nope").is_some() {
+        return Err("parse_volume accepted non-numeric input".into());
+    }
+    // Read path must not panic; a reported level (when available) stays in range.
+    let a = sys::audio();
+    if a.available && (a.volume < 0 || a.volume > 100) {
+        return Err(format!("audio volume {} out of range", a.volume));
+    }
+    // Reference the setter without calling it (it would move the live level).
+    let _set: fn(i32) -> Result<(), String> = sys::set_volume;
     Ok(())
 }
 
@@ -110,10 +137,16 @@ fn system_core() -> Result<(), String> {
     }
     // The byte parse/format pair underpins per-group memory sums (Processes tab).
     if sys::parse_bytes("1 MB") != 1024 * 1024 {
-        return Err(format!("parse_bytes(\"1 MB\") = {}", sys::parse_bytes("1 MB")));
+        return Err(format!(
+            "parse_bytes(\"1 MB\") = {}",
+            sys::parse_bytes("1 MB")
+        ));
     }
     if sys::fmt_bytes(1024 * 1024) != "1.0 MB" {
-        return Err(format!("fmt_bytes(1 MiB) = {}", sys::fmt_bytes(1024 * 1024)));
+        return Err(format!(
+            "fmt_bytes(1 MiB) = {}",
+            sys::fmt_bytes(1024 * 1024)
+        ));
     }
     Ok(())
 }

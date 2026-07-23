@@ -157,15 +157,17 @@ pub struct Net {
 /// Read the current network configuration + stack status. Never panics; any
 /// unreadable source degrades to empty / `false`.
 pub fn net() -> Net {
-    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default().trim().to_string();
+    let read = |p: &str| {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
     // The `ip` scheme only appears once netstack has registered it; listing
     // `/scheme` is the reliable probe (statting `/scheme/ip` directly is a
     // socket op, not a file op). On a host `/scheme` is absent → false.
     let stack_up = std::fs::read_dir("/scheme")
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .any(|e| e.file_name() == "ip")
-        })
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.file_name() == "ip"))
         .unwrap_or(false);
     Net {
         ip: read("/etc/net/ip"),
@@ -211,6 +213,64 @@ fn storage_from(f_bsize: u64, f_blocks: u64, f_bavail: u64) -> Storage {
         free_bytes: free,
         used_bytes: total.saturating_sub(free),
     }
+}
+
+/// Audio state — the master output level, shown on the Sound tab.
+///
+/// `audiod` serves the `audio:` scheme; its `audio:volume` control reads and
+/// writes the master volume as a plain decimal string `0–100`, so we treat it as
+/// an ordinary file. When `audiod` isn't running — it exits if no `audiohw:`
+/// driver is present, e.g. on the QEMU dev loop where `ihdad` never completes its
+/// HDA/RIRB handshake (see `docs/known-issues.md`) — the open fails and we
+/// degrade to `available = false`. On a host `/scheme` is absent → same graceful
+/// path. This keeps the tab honest instead of showing a slider that controls
+/// nothing.
+#[derive(Clone, Debug, Default)]
+pub struct Audio {
+    /// True when `audio:volume` could be opened — i.e. audiod is live.
+    pub available: bool,
+    /// Master output volume, 0–100 (meaningful only when `available`).
+    pub volume: i32,
+}
+
+/// audiod's master-volume control endpoint.
+const VOLUME_PATH: &str = "/scheme/audio/volume";
+
+/// Clamp a volume to the daemon's accepted `0–100` range — audiod rejects
+/// anything outside it with `EINVAL`, so we never send an out-of-range value.
+pub fn clamp_volume(v: i32) -> i32 {
+    v.clamp(0, 100)
+}
+
+/// Parse the decimal string audiod returns for `audio:volume` into `0–100`.
+/// `None` for non-numeric input (so a garbled read can't masquerade as a level).
+pub fn parse_volume(s: &str) -> Option<i32> {
+    s.trim().parse::<i32>().ok().map(clamp_volume)
+}
+
+/// Read the current master volume + whether the audio stack is up. Never panics;
+/// an absent/closed `audio:` scheme degrades to `available = false`. Read-only,
+/// so it is safe to call from the boot self-test (it never moves the level).
+pub fn audio() -> Audio {
+    match std::fs::read_to_string(VOLUME_PATH) {
+        Ok(s) => Audio {
+            available: true,
+            // Scheme answered but with garbage → up, level unknown (0).
+            volume: parse_volume(&s).unwrap_or(0),
+        },
+        Err(_) => Audio {
+            available: false,
+            volume: 0,
+        },
+    }
+}
+
+/// Set the master volume (clamped to `0–100`). Writes the decimal string to
+/// `audio:volume`; audiod applies it as a perceptual cube curve to every mixed
+/// sample. Errors (e.g. audiod not running) are surfaced, never panicked.
+pub fn set_volume(v: i32) -> Result<(), String> {
+    let v = clamp_volume(v);
+    std::fs::write(VOLUME_PATH, v.to_string().as_bytes()).map_err(|e| format!("{VOLUME_PATH}: {e}"))
 }
 
 /// Power the machine off. The control `sys:kstop` is root-only and eos-control
