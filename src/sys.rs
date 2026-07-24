@@ -167,8 +167,28 @@ pub struct Net {
 /// Read a single-line `netcfg:` value, mapping smolnetd's placeholder strings
 /// ("Not configured", "Device not found") and unreadable/empty results to
 /// `None`, so a placeholder can never masquerade as a real value.
+///
+/// Uses an explicit `File::open` + `read` loop rather than
+/// `std::fs::read_to_string`. On E-OS the latter **fails** on the `netcfg:`
+/// scheme files — it returned `Err` on-device, so `net()` silently fell back to
+/// the persistent `/etc/net/*` files (a stale read of the live config; caught by
+/// the U-112 render-verify, where the DNS tile showed the file's `9.9.9.9`
+/// instead of the live `10.0.2.3`). A plain read loop — exactly what `cat` does,
+/// which reads the same paths correctly — sidesteps `read_to_end`'s
+/// size-hinted specialization that the scheme doesn't satisfy.
 fn read_netcfg(path: &str) -> Option<String> {
-    let s = std::fs::read_to_string(path).ok()?;
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(_) => return None,
+        }
+    }
+    let s = String::from_utf8_lossy(&out);
     let s = s.trim();
     if s.is_empty() || s == "Not configured" || s == "Device not found" {
         None
