@@ -13,6 +13,8 @@
 #[cfg(feature = "gui")]
 mod gui;
 mod labels;
+// Shared with the standalone `eos-netcfg` shim binary (see src/netcore.rs).
+mod netcore;
 mod security;
 mod selftest;
 mod sys;

@@ -144,9 +144,58 @@ fn net_core() -> Result<(), String> {
     if sys::apply_static("eth0", "10.0.0.5", 24, "garbage", "", "x").is_ok() {
         return Err("apply_static accepted a bad gateway".into());
     }
-    // Reference the setter without a valid-input call (that would reconfigure the
-    // live network); the render test proves the apply end to end.
+    // ── addressing mode (DHCP / static) ──────────────────────────
+    // The marker parser decides which mode the tab reports and which branch an
+    // apply takes, so its "anything that isn't `static` is DHCP" rule is asserted
+    // explicitly — including the garbage and empty cases.
+    if sys::parse_net_mode("static") != sys::NetMode::Static
+        || sys::parse_net_mode(" STATIC \n") != sys::NetMode::Static
+    {
+        return Err("parse_net_mode did not recognise the static marker".into());
+    }
+    if sys::parse_net_mode("dhcp") != sys::NetMode::Dhcp
+        || sys::parse_net_mode("") != sys::NetMode::Dhcp
+        || sys::parse_net_mode("nonsense") != sys::NetMode::Dhcp
+    {
+        return Err("parse_net_mode did not default unknown input to DHCP".into());
+    }
+    if sys::NetMode::Static.as_str() != "static" || sys::NetMode::Dhcp.as_str() != "dhcp" {
+        return Err("NetMode::as_str does not round-trip the marker token".into());
+    }
+    // The read path (not just the parser): a real file, and a missing one.
+    {
+        let p = std::env::temp_dir().join("eos-control-selftest-mode");
+        fs::write(&p, b"static\n").map_err(|e| format!("write mode marker: {e}"))?;
+        if sys::read_net_mode_at(&p.to_string_lossy()) != sys::NetMode::Static {
+            return Err("read_net_mode_at did not read back the static marker".into());
+        }
+        let _ = fs::remove_file(&p);
+        if sys::read_net_mode_at(&p.to_string_lossy()) != sys::NetMode::Dhcp {
+            return Err("an absent mode marker must read as DHCP".into());
+        }
+    }
+    // Interface names ride on argv into a root process and are interpolated into a
+    // scheme path, so the guard must reject anything path-like.
+    if !sys::valid_iface("eth0") || !sys::valid_iface("en_p1-0") {
+        return Err("valid_iface rejected a plausible interface name".into());
+    }
+    if sys::valid_iface("")
+        || sys::valid_iface("../etc")
+        || sys::valid_iface("eth 0")
+        || sys::valid_iface("a/b")
+        || sys::valid_iface("verylonginterfacename")
+    {
+        return Err("valid_iface accepted an unsafe interface name".into());
+    }
+    // The DHCP path must reject a bad interface before spawning the shim.
+    if sys::apply_dhcp("../etc", "x").is_ok() {
+        return Err("apply_dhcp accepted an unsafe interface name".into());
+    }
+
+    // Reference both setters without a valid-input call (that would reconfigure
+    // the live network); the render test proves the applies end to end.
     let _apply: fn(&str, &str, i32, &str, &str, &str) -> Result<(), String> = sys::apply_static;
+    let _dhcp: fn(&str, &str) -> Result<(), String> = sys::apply_dhcp;
     Ok(())
 }
 

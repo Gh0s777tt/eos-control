@@ -74,6 +74,11 @@ export component MainWindow inherits Window {
     in property <string> net-subnet: "—";
     in property <string> net-mac: "—";
     in property <string> net-stack: "—";
+    // The DETECTED addressing mode (from /etc/net/mode), refreshed like the tiles.
+    in property <string> net-mode: "—";
+    // What the mode segments SELECT. Seeded once from the detected mode, then the
+    // user owns it — a periodic refresh must never yank it back mid-edit.
+    in-out property <bool> net-want-static: false;
     // Network — static edit form. The set-* fields two-way-bind the LineEdits;
     // Rust pre-fills them once with the current values, so the user edits from
     // the live config. Applying is a two-step confirm (like Power) and needs the
@@ -114,7 +119,7 @@ export component MainWindow inherits Window {
     callback shutdown(string);   // (password) → eos-power shutdown
     callback set-volume(float);  // Sound-tab slider → audio:volume (cast to int in Rust)
     callback toggle-mute();      // mute (→0) / unmute (→ remembered level)
-    callback net-apply();        // apply the static IP/gateway/DNS via eos-netcfg
+    callback net-apply();        // apply the selected mode (static fields / DHCP) via eos-netcfg
 
     // Colour for a finding by kind: warn=red, modified=orange, new=amber,
     // removed=muted, ok=text.
@@ -336,41 +341,73 @@ export component MainWindow inherits Window {
                     Tile { caption: "Brama"; value: root.net-gateway; }
                     Tile { caption: "DNS"; value: root.net-dns; }
                 }
+                // Mode lives on the text line rather than a sixth Tile: the window
+                // is 800 px and a sixth tile clips the DNS one.
                 Text {
-                    text: "MAC: " + root.net-mac + "   ·   Stos sieciowy: " + root.net-stack;
+                    text: "Tryb: " + root.net-mode + "   ·   MAC: " + root.net-mac + "   ·   Stos sieciowy: " + root.net-stack;
                     color: #8a6f6f; font-size: 11px;
                 }
 
-                // Static configuration editor. Empty Brama/DNS = leave unchanged.
+                // Address configuration: pick a mode, then apply. Empty Brama/DNS
+                // in static mode = leave that field unchanged.
                 Rectangle {
                     background: #160404;
                     border-radius: 8px;
                     VerticalLayout {
                         padding: 12px;
                         spacing: 10px;
-                        Text { text: "Ustaw statyczny adres"; color: #e50914; font-size: 13px; }
+                        Text { text: "Konfiguracja adresu"; color: #e50914; font-size: 13px; }
+                        // Mode segments. Flipping the segment DISARMS the confirm and
+                        // clears the password, so nobody can arm one mode, switch, and
+                        // confirm something they didn't read.
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: "Automatyczna (DHCP)";
+                                primary: !root.net-want-static;
+                                clicked => {
+                                    root.net-want-static = false;
+                                    root.net-confirm = false;
+                                    root.net-password = "";
+                                }
+                            }
+                            Button {
+                                text: "Statyczna";
+                                primary: root.net-want-static;
+                                clicked => {
+                                    root.net-want-static = true;
+                                    root.net-confirm = false;
+                                    root.net-password = "";
+                                }
+                            }
+                            Rectangle { }
+                        }
+                        if !root.net-want-static: Text {
+                            text: "Adres, maska, brama i DNS zostaną pobrane z serwera DHCP.";
+                            color: #8a6f6f; font-size: 10px; wrap: word-wrap;
+                        }
                         HorizontalLayout {
                             spacing: 10px;
                             VerticalLayout {
                                 spacing: 3px;
-                                Text { text: "Adres IP"; color: #8a6f6f; font-size: 10px; }
-                                LineEdit { placeholder-text: "10.0.2.15"; text <=> root.net-set-ip; }
+                                Text { text: "Adres IP"; color: root.net-want-static ? #8a6f6f : #5a4a4a; font-size: 10px; }
+                                LineEdit { placeholder-text: "10.0.2.15"; text <=> root.net-set-ip; enabled: root.net-want-static; }
                             }
                             VerticalLayout {
                                 spacing: 3px;
                                 width: 90px;
-                                Text { text: "Prefiks (/N)"; color: #8a6f6f; font-size: 10px; }
-                                LineEdit { placeholder-text: "24"; text <=> root.net-set-prefix; }
+                                Text { text: "Prefiks (/N)"; color: root.net-want-static ? #8a6f6f : #5a4a4a; font-size: 10px; }
+                                LineEdit { placeholder-text: "24"; text <=> root.net-set-prefix; enabled: root.net-want-static; }
                             }
                             VerticalLayout {
                                 spacing: 3px;
-                                Text { text: "Brama"; color: #8a6f6f; font-size: 10px; }
-                                LineEdit { placeholder-text: "10.0.2.2"; text <=> root.net-set-gateway; }
+                                Text { text: "Brama"; color: root.net-want-static ? #8a6f6f : #5a4a4a; font-size: 10px; }
+                                LineEdit { placeholder-text: "10.0.2.2"; text <=> root.net-set-gateway; enabled: root.net-want-static; }
                             }
                             VerticalLayout {
                                 spacing: 3px;
-                                Text { text: "DNS"; color: #8a6f6f; font-size: 10px; }
-                                LineEdit { placeholder-text: "9.9.9.9"; text <=> root.net-set-dns; }
+                                Text { text: "DNS"; color: root.net-want-static ? #8a6f6f : #5a4a4a; font-size: 10px; }
+                                LineEdit { placeholder-text: "9.9.9.9"; text <=> root.net-set-dns; enabled: root.net-want-static; }
                             }
                         }
                         // Password appears only once Apply is armed (like Power).
@@ -383,11 +420,11 @@ export component MainWindow inherits Window {
                         HorizontalLayout {
                             spacing: 10px;
                             if !root.net-confirm: Button {
-                                text: "Zastosuj (statyczne)";
+                                text: root.net-want-static ? "Zastosuj (statyczne)" : "Zastosuj (DHCP)";
                                 clicked => { root.net-confirm = true; }
                             }
                             if root.net-confirm: Button {
-                                text: "⚠ Potwierdź zmianę sieci";
+                                text: root.net-want-static ? "⚠ Potwierdź zmianę sieci" : "⚠ Potwierdź przejście na DHCP";
                                 clicked => { root.net-apply(); }
                             }
                             if root.net-confirm: Button {

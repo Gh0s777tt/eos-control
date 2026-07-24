@@ -12,6 +12,10 @@
 //! capability-secure microkernel that is impossible to hide, unlike on Windows.
 
 use crate::labels;
+// Pure helpers + the scheme reader are shared verbatim with the `eos-netcfg`
+// shim (a separate binary), so they live in `netcore` and are re-exported here
+// — callers keep using `sys::parse_addr_list`, `sys::NetMode`, and friends.
+pub use crate::netcore::*;
 
 /// A one-glance summary of the machine, shown on the Overview tab.
 #[derive(Clone, Debug, Default)]
@@ -162,112 +166,11 @@ pub struct Net {
     pub subnet: String,
     /// Interface hardware (MAC) address, informational; empty if unavailable.
     pub mac: String,
+    /// How the address is obtained — the persisted policy, not a guess about the
+    /// current values (read from `/etc/net/mode`; absent ⇒ DHCP).
+    pub mode: NetMode,
     /// True when the `ip` scheme is present — i.e. netstack/smolnetd is running.
     pub stack_up: bool,
-}
-
-/// Read a single-line `netcfg:` value, mapping smolnetd's placeholder strings
-/// ("Not configured", "Device not found") and unreadable/empty results to
-/// `None`, so a placeholder can never masquerade as a real value.
-///
-/// Uses an explicit `File::open` + `read` loop rather than
-/// `std::fs::read_to_string`. On E-OS the latter **fails** on the `netcfg:`
-/// scheme files — it returned `Err` on-device, so `net()` silently fell back to
-/// the persistent `/etc/net/*` files (a stale read of the live config; caught by
-/// the U-112 render-verify, where the DNS tile showed the file's `9.9.9.9`
-/// instead of the live `10.0.2.3`). A plain read loop — exactly what `cat` does,
-/// which reads the same paths correctly — sidesteps `read_to_end`'s
-/// size-hinted specialization that the scheme doesn't satisfy.
-fn read_netcfg(path: &str) -> Option<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut out = Vec::new();
-    let mut buf = [0u8; 256];
-    loop {
-        match f.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&buf[..n]),
-            Err(_) => return None,
-        }
-    }
-    let s = String::from_utf8_lossy(&out);
-    let s = s.trim();
-    if s.is_empty() || s == "Not configured" || s == "Device not found" {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
-/// Parse the netcfg `ifaces/<iface>/addr/list` payload (`"10.0.2.15/24"`) into
-/// `(ip, prefix)`. `None` for a non-CIDR value (placeholders included), so the
-/// caller can fall back rather than show garbage.
-pub fn parse_addr_list(s: &str) -> Option<(String, u8)> {
-    let (ip, prefix) = s.trim().split_once('/')?;
-    let ip: std::net::Ipv4Addr = ip.trim().parse().ok()?;
-    let prefix: u8 = prefix.trim().parse().ok()?;
-    if prefix > 32 {
-        return None;
-    }
-    Some((ip.to_string(), prefix))
-}
-
-/// Convert an IPv4 prefix length (0–32) to a dotted netmask (`24` → `255.255.255.0`).
-pub fn prefix_to_netmask(prefix: u8) -> String {
-    let p = prefix.min(32) as u32;
-    // p == 0 → 0.0.0.0; a plain `MAX << 32` would overflow-panic, so special-case
-    // it. For 1..=32 the shift amount is 0..=31, always in range.
-    let bits: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
-    let o = bits.to_be_bytes();
-    format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
-}
-
-/// True if `s` parses as an IPv4 address.
-pub fn valid_ipv4(s: &str) -> bool {
-    s.trim().parse::<std::net::Ipv4Addr>().is_ok()
-}
-
-/// True if `p` is a valid IPv4 prefix length (0–32).
-pub fn valid_prefix(p: i32) -> bool {
-    (0..=32).contains(&p)
-}
-
-/// Convert a dotted netmask to a prefix length (`255.255.255.0` → `24`). `None`
-/// if it isn't a canonical mask (contiguous ones followed by zeros) — used only
-/// to pre-fill the edit form's prefix box, so a weird mask just leaves it blank.
-pub fn netmask_to_prefix(mask: &str) -> Option<u8> {
-    let addr: std::net::Ipv4Addr = mask.trim().parse().ok()?;
-    let bits = u32::from(addr);
-    let ones = bits.leading_ones();
-    // Reject non-contiguous masks: the ones-count must reconstruct the value.
-    let canonical = if ones == 0 {
-        0
-    } else {
-        u32::MAX << (32 - ones)
-    };
-    if bits == canonical {
-        Some(ones as u8)
-    } else {
-        None
-    }
-}
-
-/// Pull the default-route gateway out of the netcfg `route/list` dump. Lines
-/// read `default  via 10.0.2.2 dev eth0 src 10.0.2.15` (non-default routes have
-/// no `via`); we take the `via` token from the `default` line.
-pub fn parse_default_gateway(route_list: &str) -> Option<String> {
-    for line in route_list.lines() {
-        if !line.trim_start().starts_with("default") {
-            continue;
-        }
-        let mut it = line.split_whitespace();
-        while let Some(tok) = it.next() {
-            if tok == "via" {
-                return it.next().map(str::to_string);
-            }
-        }
-    }
-    None
 }
 
 /// Read the current network configuration + stack status. Prefers the live
@@ -324,6 +227,7 @@ pub fn net() -> Net {
         dns,
         subnet,
         mac,
+        mode: read_net_mode_at(NET_MODE_PATH),
         stack_up,
     }
 }
@@ -355,34 +259,53 @@ pub fn apply_static(
     if !dns.is_empty() && !valid_ipv4(dns) {
         return Err(format!("nieprawidłowy adres DNS: {dns}"));
     }
-    let iface = iface.trim();
-    let iface = if iface.is_empty() { "eth0" } else { iface };
-    apply_static_impl(iface, ip, prefix, gateway, dns, password)
-}
-
-/// Spawn `eos-netcfg <iface> <ip> <prefix> <gw|-> <dns|->`, pipe `password` to
-/// its stdin, and wait. Ok = the shim authenticated and applied the config;
-/// Err = bad password / no permission. Redox-only; on a host it is a guarded
-/// no-op so a developer's box is never reconfigured.
-#[cfg(target_os = "redox")]
-fn apply_static_impl(
-    iface: &str,
-    ip: &str,
-    prefix: i32,
-    gateway: &str,
-    dns: &str,
-    password: &str,
-) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+    let iface = check_iface(iface)?;
     // `-` tells the shim to leave that field unchanged.
     let gw = if gateway.is_empty() { "-" } else { gateway };
     let dns_arg = if dns.is_empty() { "-" } else { dns };
+    run_shim(
+        &["static", iface, ip, &prefix.to_string(), gw, dns_arg],
+        password,
+    )
+}
+
+/// Switch the interface back to **DHCP**. Records the policy and has the shim
+/// obtain a lease: it runs `dhcpd` (which configures only the live `netcfg:`
+/// scheme) and then mirrors the result into `/etc/net/*`, so this GUI — which
+/// cannot read the scheme from the user's session — sees the leased values and
+/// they survive a reboot.
+pub fn apply_dhcp(iface: &str, password: &str) -> Result<(), String> {
+    let iface = check_iface(iface)?;
+    run_shim(&["dhcp", iface], password)
+}
+
+/// Default an empty interface to `eth0` and reject an implausible name before it
+/// reaches the root shim. See [`valid_iface`] for why the name is guarded.
+fn check_iface(iface: &str) -> Result<&str, String> {
+    let iface = iface.trim();
+    let iface = if iface.is_empty() { "eth0" } else { iface };
+    if !valid_iface(iface) {
+        return Err(format!("nieprawidłowa nazwa interfejsu: {iface}"));
+    }
+    Ok(iface)
+}
+
+/// Spawn `eos-netcfg <args…>`, pipe `password` to its stdin, and wait. One
+/// spawner for both modes (`static …` / `dhcp …`) so the privileged call site
+/// exists once. Ok = the shim authenticated and applied the change; Err = bad
+/// password / no permission / the shim failed (e.g. no DHCP server answered).
+/// Redox-only; on a host it is a guarded no-op so a developer's box is never
+/// reconfigured.
+#[cfg(target_os = "redox")]
+fn run_shim(args: &[&str], password: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     let mut child = Command::new("eos-netcfg")
-        .args([iface, ip, &prefix.to_string(), gw, dns_arg])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Keep stderr: the shim's message (bad password, DHCP timeout) lands on
+        // the serial log, which is how a failed apply gets diagnosed.
         .spawn()
         .map_err(|e| format!("nie można uruchomić eos-netcfg: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -390,20 +313,13 @@ fn apply_static_impl(
     }
     match child.wait() {
         Ok(st) if st.success() => Ok(()),
-        Ok(_) => Err("błędne hasło lub brak uprawnień".into()),
+        Ok(_) => Err("błędne hasło, brak uprawnień lub błąd konfiguracji".into()),
         Err(e) => Err(format!("eos-netcfg: {e}")),
     }
 }
 
 #[cfg(not(target_os = "redox"))]
-fn apply_static_impl(
-    _iface: &str,
-    _ip: &str,
-    _prefix: i32,
-    _gateway: &str,
-    _dns: &str,
-    _password: &str,
-) -> Result<(), String> {
+fn run_shim(_args: &[&str], _password: &str) -> Result<(), String> {
     Err("dostępne tylko na E-OS".into())
 }
 

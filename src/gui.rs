@@ -179,6 +179,7 @@ fn refresh(win: &MainWindow, state: &State) {
     win.set_net_dns(dash(&net.dns));
     win.set_net_subnet(dash(&net.subnet));
     win.set_net_mac(dash(&net.mac));
+    win.set_net_mode(SharedString::from(net.mode.label()));
     win.set_net_stack(SharedString::from(if net.stack_up {
         "aktywny"
     } else {
@@ -237,6 +238,9 @@ pub fn run() {
         ));
         win.set_net_set_gateway(SharedString::from(n0.gateway.as_str()));
         win.set_net_set_dns(SharedString::from(n0.dns.as_str()));
+        // Seed the mode segments from the detected policy — once. After this the
+        // user owns the selection; `refresh` must never yank it back mid-edit.
+        win.set_net_want_static(n0.mode == sys::NetMode::Static);
     }
 
     {
@@ -366,12 +370,23 @@ pub fn run() {
         });
     }
     {
-        // Network: apply the static config. Reads the edit fields, parses the
-        // prefix, and hands the change to `sys::apply_static` (→ eos-netcfg shim
-        // with the password on stdin). The two-step confirm lives in the UI.
-        let (weak, state) = (win.as_weak(), state.clone());
+        // Network: apply the selected mode — the static fields, or a DHCP lease.
+        //
+        // The work runs on a **worker thread**: a DHCP lease waits on a server
+        // (dhcpd's socket timeout is 30 s), and doing that on the Slint event loop
+        // would freeze the window mid-click. The status line updates immediately,
+        // the outcome lands back on the UI thread via `upgrade_in_event_loop`, and
+        // the 3 s refresh timer picks up the new tile values.
+        let weak = win.as_weak();
         win.on_net_apply(move || {
             let Some(w) = weak.upgrade() else { return };
+            let want_static = w.get_net_want_static();
+            // The tile shows "—" when the interface is unknown; hand that to the
+            // shim as "unset" so it defaults to eth0 rather than failing on a dash.
+            let iface = match w.get_net_iface().to_string() {
+                s if s == "—" => String::new(),
+                s => s,
+            };
             // An unparseable prefix becomes -1, which apply_static rejects with a
             // clear "out of range" message rather than silently defaulting.
             let prefix: i32 = w
@@ -380,21 +395,36 @@ pub fn run() {
                 .trim()
                 .parse()
                 .unwrap_or(-1);
-            let msg = match sys::apply_static(
-                &w.get_net_iface().to_string(),
-                &w.get_net_set_ip().to_string(),
-                prefix,
-                &w.get_net_set_gateway().to_string(),
-                &w.get_net_set_dns().to_string(),
-                &w.get_net_password().to_string(),
-            ) {
-                Ok(()) => "Zastosowano konfigurację sieci.".to_string(),
-                Err(e) => format!("Nie udało się: {e}"),
-            };
-            w.set_net_status(SharedString::from(msg));
+            let ip = w.get_net_set_ip().to_string();
+            let gateway = w.get_net_set_gateway().to_string();
+            let dns = w.get_net_set_dns().to_string();
+            let password = w.get_net_password().to_string();
+
+            // Disarm and clear the password before the work starts, so the window
+            // can never sit armed while an apply is in flight.
             w.set_net_confirm(false);
             w.set_net_password(SharedString::from(""));
-            refresh(&w, &state.borrow());
+            w.set_net_status(SharedString::from(if want_static {
+                "Stosowanie konfiguracji…"
+            } else {
+                "Pobieranie adresu z DHCP…"
+            }));
+
+            let weak2 = w.as_weak();
+            std::thread::spawn(move || {
+                let res = if want_static {
+                    sys::apply_static(&iface, &ip, prefix, &gateway, &dns, &password)
+                } else {
+                    sys::apply_dhcp(&iface, &password)
+                };
+                let msg = match res {
+                    Ok(()) => "Zastosowano konfigurację sieci.".to_string(),
+                    Err(e) => format!("Nie udało się: {e}"),
+                };
+                let _ = weak2.upgrade_in_event_loop(move |w| {
+                    w.set_net_status(SharedString::from(msg));
+                });
+            });
         });
     }
 
