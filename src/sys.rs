@@ -136,16 +136,18 @@ pub fn processes() -> Vec<Proc> {
 
 /// Network configuration + stack status, shown on the Network tab.
 ///
-/// Reads the **live** `netcfg:` scheme smolnetd serves — the authoritative
-/// running config — and falls back to the persistent `/etc/net/*` files the base
-/// image ships (which dhcpd keeps current) when the scheme is unreadable. The
-/// scheme layout was recon'd from the smolnetd source (`netcfg` `cfg_node!`
-/// tree): `ifaces` lists interfaces; `ifaces/<iface>/addr/list` gives `ip/prefix`
-/// (or the placeholders "Not configured" / "Device not found"); `route/list`
-/// carries the routing table; `resolv/nameserver` the DNS resolver; and
-/// `ifaces/<iface>/mac` the hardware address. All plain reads — on a host both
-/// the scheme and the files are absent so every field degrades to empty /
-/// `stack_up = false`.
+/// Reads the `netcfg:` scheme when it's reachable, else the persistent
+/// `/etc/net/*` files. **In the desktop GUI the files are the effective source:**
+/// the user's orbital session namespace does **not** include the `netcfg:` scheme
+/// (only the `ip`/`tcp`/`udp` sockets — network *config* is privileged; confirmed
+/// on-device via `ls /scheme`), so every `netcfg:` open fails for the GUI and the
+/// `/etc/net/*` fallback wins. That's why the `eos-netcfg` shim, after changing the
+/// live scheme as root, also writes `/etc/net/*` — so an apply is visible here and
+/// persists. The scheme layout (used when this *does* run privileged, e.g. a boot
+/// probe) was recon'd from the smolnetd source (`netcfg` `cfg_node!` tree):
+/// `ifaces/<iface>/addr/list` gives `ip/prefix`; `route/list` the routes;
+/// `resolv/nameserver` the DNS; `ifaces/<iface>/mac` the MAC. On a host both the
+/// scheme and the files are absent so every field degrades to empty.
 #[derive(Clone, Debug, Default)]
 pub struct Net {
     /// Interface name, e.g. `eth0` (smolnetd currently serves a single `eth0`).

@@ -12,10 +12,11 @@
 //! `netcfg` `cfg_node!` tree): `ifaces/<iface>/addr/set` takes an `IpCidr`
 //! (`10.0.2.15/24`); `route/add` takes `default via <ip>` and needs the address
 //! set first (so the gateway is on-link); `route/rm` takes a CIDR (`0.0.0.0/0`
-//! is the default route); `resolv/nameserver` takes a single IPv4. Writes are
-//! **live** — they change the running stack, not the persistent `/etc/net/*`
-//! files (a persistent DHCP/static choice is an installer/OOBE concern, tracked
-//! as the R-902 follow-up).
+//! is the default route); `resolv/nameserver` takes a single IPv4. The scheme
+//! writes change the **live** running stack; we then also write the persistent
+//! `/etc/net/*` files, both so the change survives a reboot **and** so the
+//! desktop-user GUI — whose session has no `netcfg:` scheme, so it reads those
+//! files — can see it (see `sys::net`).
 //!
 //! Usage: `echo "$password" | eos-netcfg <iface> <ip> <prefix> <gw|-> <dns|->`
 //! (`-` leaves that field unchanged). Values ride on argv (they aren't secret);
@@ -130,7 +131,37 @@ fn run(password: &str, cfg: &Cfg) -> Result<(), String> {
         .map_err(|e| format!("resolv/nameserver: {e}"))?;
     }
 
+    // 4) Persist to the /etc/net/* files. This is **not** cosmetic: the desktop
+    //    user's session namespace does **not** include the `netcfg:` scheme (only
+    //    the `ip`/`tcp`/`udp` sockets — network config is privileged), so the GUI
+    //    reads these files, not the scheme (confirmed on-device: `ls /scheme` in
+    //    the user session has no `netcfg`). Writing them here — we're root — makes
+    //    the applied config **visible** to the GUI's next refresh **and** survive a
+    //    reboot. Best-effort: a failure here doesn't undo the live change above.
+    let _ = std::fs::write("/etc/net/ip", format!("{}\n", cfg.ip));
+    let _ = std::fs::write(
+        "/etc/net/ip_subnet",
+        format!("{}\n", prefix_to_netmask(cfg.prefix)),
+    );
+    if let Some(gw) = cfg.gateway {
+        let _ = std::fs::write("/etc/net/ip_router", format!("{gw}\n"));
+    }
+    if let Some(dns) = cfg.dns {
+        let _ = std::fs::write("/etc/net/dns", format!("{dns}\n"));
+    }
+
     Ok(())
+}
+
+/// Convert an IPv4 prefix length (0–32) to a dotted netmask for `/etc/net/ip_subnet`
+/// (`24` → `255.255.255.0`). Mirrors `sys::prefix_to_netmask` (the crate's lib half
+/// isn't shared with this standalone shim bin).
+#[cfg(target_os = "redox")]
+fn prefix_to_netmask(prefix: u8) -> String {
+    let p = prefix.min(32) as u32;
+    let bits: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+    let o = bits.to_be_bytes();
+    format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
 }
 
 #[cfg(not(target_os = "redox"))]
