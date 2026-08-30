@@ -1,63 +1,95 @@
 # E-OS Control
 
-The unified Crimson **control center** for [E-OS](https://gitlab.com/e-os/e-os) —
-one app for system monitoring, process/task management, and security. Built on the
-shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
+The E-OS control centre: system overview, processes, security, storage, power, sound and live network configuration.
 
-> **Why one app, not several?** On a capability-secure microkernel, *what a process
-> can touch* (its open schemes) is at once its **resource profile** and its
-> **security profile** — so monitoring and security are two views of one truth.
-> Splitting them into separate tools fragments that. E-OS Control keeps them together.
+[![pipeline](https://gitlab.com/e-os/eos-control/badges/main/pipeline.svg)](https://gitlab.com/e-os/eos-control/-/pipelines)
+[![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
-## Tabs
+## Table of contents
 
-- **Overview** — system identity, CPU count, process count, **total private memory**,
-  context switches, IRQs (from `sys:uname` / `sys:cpu` / `sys:stat` / the process list).
-- **Processes** — a task manager that's meant to beat the Windows one:
-  - **ranked by memory** (heaviest first) so "what's eating my RAM?" is answered at a
-    glance; the footer shows the process count and total private memory;
-  - **grouped by app**, not scattered: many instances of one program (think a
-    browser with eight windows) collapse into a single `name ×N` header with the
-    summed memory and the *union* of their resources (groups rank by their summed
-    total); expand it on demand instead of hunting duplicates down a flat list;
-  - every process carries a **human label** ("orbital = desktop server", "pcid = PCI
-    driver manager") so you're never lost in cryptic names;
-  - a **capability inspector** — select a process to see exactly which schemes/
-    resources it holds open (from `sys:iostat`). Impossible to show on Windows.
-  - **force-kill** — select a stuck process and confirm to end it (SIGKILL, which
-    relibc routes to the kernel's unblockable ForceKill via `libredox`);
-  - live refresh, memory + CPU time + owner + status, and a filter.
-- **Security** — a blake3 file-integrity **baseline** + diff (NEW/MODIFIED/REMOVED),
-  a dangerous-permission **audit** (setuid/setgid/world-writable), and a
-  tamper-evident baseline digest. (Ported from `eos-guard`.)
-- **Network** — the **live** config read from the `netcfg:` scheme (interface, IP,
-  netmask, gateway, DNS, MAC, stack status), plus a **static editor**: set the
-  IP/prefix/gateway/DNS and apply them live. The write is root-only, so it goes
-  through the privileged `eos-netcfg` shim (password-gated, GUI never runs as
-  root — like the power actions). See `docs/design-eos-control-network.md`.
-- **Storage** — root-filesystem capacity / used / free / use-% via `statvfs`
-  (redoxfs `fstatvfs` on E-OS).
-- **Sound** — audiod's master volume (a slider + mute over `audio:volume`); shows
-  an honest "unavailable" state when no `audiohw:` driver is up.
-- **Power** — reboot / shutdown, each a two-step confirm + password, via the
-  privileged `eos-power` shim (`docs/design-eos-power.md`).
+- [What this repository is](#what-this-repository-is)
+- [Where it fits](#where-it-fits)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Requirements](#requirements)
+- [Project documents](#project-documents)
+- [Security](#security)
+- [License and acknowledgements](#license-and-acknowledgements)
 
-## Headless self-test
+## What this repository is
 
-`eos-control --selftest` proves every core without a display — the system/process
-snapshot, the byte-size math behind group memory sums, the security baseline/audit/
-digest, and the **force-kill path** (it spawns a throwaway child, kills it, and
-confirms it dies) — printing `EOS-CONTROL-SELFTEST-OK`. Used by boot probes and CI.
-On a host it reads `/proc`.
+First-party application (type A). Ships in the E-OS image as `/usr/bin/eos-control` and appears in the launcher as `45_eos-control`.
 
-## Building
+It is part of **E-OS**, a hardened downstream distribution of [Redox OS](https://www.redox-os.org).
+The orchestrating repository — recipes, image configuration and the build system — is
+[`e-os/e-os`](https://gitlab.com/e-os/e-os).
 
-Built as an E-OS recipe (`recipes/gui/eos-control`) for `aarch64/x86_64-unknown-redox`.
-Bundled SQLite needs `-DSQLITE_DISABLE_LFS` (relibc has no LFS64 aliases). Host build
-for development/CI: `cargo build --no-default-features` (the CLI/selftest half —
-see [docs/creating-an-eos-app.md](https://gitlab.com/e-os/e-os/-/blob/main/docs/creating-an-eos-app.md)).
+### Where it fits
 
-## Hosting
+```mermaid
+graph LR
+  EOS["e-os/e-os<br/>orchestrator"] -->|pins this repo in repos.toml| THIS["eos-control"]
+  THIS --> UI["eos-ui<br/>shared Slint-on-Orbital backend"]
+  THIS -->|packaged as .pkgar| IMG["E-OS image"]
+  style THIS fill:#8b0000,stroke:#e50914,color:#fff
+```
 
-Dev + CI on GitLab (`gitlab.com/e-os/eos-control`); `github.com/Gh0s777tt/eos-control`
-is the read-only mirror recipes fetch from. License: AGPL-3.0-or-later.
+Sibling first-party repositories: [`eos-control`](https://gitlab.com/e-os/eos-control) ·
+[`eos-notes`](https://gitlab.com/e-os/eos-notes) · [`eos-ui`](https://gitlab.com/e-os/eos-ui) ·
+[`eos-guard`](https://gitlab.com/e-os/eos-guard) *(archived)* · [`eos-sysmon`](https://gitlab.com/e-os/eos-sysmon) *(archived)*
+
+## Features
+
+Shipped features are listed in [`CHANGELOG.md`](CHANGELOG.md), each with the commit that introduced
+it. Planned work is in the orchestrator's [roadmap](https://gitlab.com/e-os/e-os/-/blob/main/ROADMAP.md).
+
+## Quick start
+
+```bash
+git clone https://gitlab.com/e-os/eos-control.git && cd eos-control
+cargo check --no-default-features
+```
+
+Verified on 2026-08-30:
+
+```
+Finished `dev` profile [unoptimized + debuginfo] target(s)
+```
+
+The graphical half targets `*-unknown-redox` and is built by the orchestrator's cookbook recipe, not
+directly on a host.
+
+## Requirements
+
+| | |
+|---|---|
+| Toolchain | Rust, pinned by the orchestrator's `rust-toolchain.toml` |
+| Host build | CLI/selftest half only — `cargo check --no-default-features` — the GUI targets Redox; the host builds the CLI/selftest half. |
+| Target build | `x86_64-unknown-redox` / `aarch64-unknown-redox`, via the cookbook |
+| Dependencies | `eos-ui` (shared Slint-on-Orbital backend), `slint`, and a privileged `eos-netcfg` / `eos-power` shim for actions the GUI must not perform as root. |
+
+## Project documents
+
+| Document | Purpose |
+|---|---|
+| [`CHANGELOG.md`](CHANGELOG.md) | release history, Keep a Changelog |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to work on this repository |
+| [`SECURITY.md`](SECURITY.md) | how to report a vulnerability |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
+| [`CLAUDE.md`](CLAUDE.md) | working contract and verification protocol |
+
+Roadmap and architecture live in the orchestrator: [ROADMAP](https://gitlab.com/e-os/e-os/-/blob/main/ROADMAP.md) ·
+[ARCHITECTURE](https://gitlab.com/e-os/e-os/-/blob/main/ARCHITECTURE.md).
+
+## Security
+
+Report vulnerabilities **privately** — see [`SECURITY.md`](SECURITY.md). Never open a public issue
+for a security bug.
+
+**This repository has no tests.** That is a known gap, tracked as `S-13` in the orchestrator's
+roadmap, and it is stated here rather than left to be discovered.
+
+## License and acknowledgements
+
+[AGPL-3.0-or-later](LICENSE). Built on **Redox OS** by Jeremy Soller and the Redox community, and on
+the Rust ecosystem. Source of truth is GitLab; the GitHub repository is a read-only mirror.
