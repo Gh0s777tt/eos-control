@@ -45,7 +45,9 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 fn usage() -> ! {
-    eprintln!("usage: eos-netcfg static <iface> <ip> <prefix> <gw|-> <dns|->   (password on stdin)");
+    eprintln!(
+        "usage: eos-netcfg static <iface> <ip> <prefix> <gw|-> <dns|->   (password on stdin)"
+    );
     eprintln!("       eos-netcfg dhcp <iface>                                 (password on stdin)");
     eprintln!("       eos-netcfg boot                                         (root; run by init)");
     std::process::exit(2);
@@ -53,6 +55,12 @@ fn usage() -> ! {
 
 /// A validated static configuration. `gateway`/`dns` are optional (`-` on the
 /// command line → `None` → left as-is).
+///
+/// Read by the `eos-netcfg` binary; the `eos-control` binary compiles this module for
+/// `apply_static`'s signature and never constructs a `Cfg`, which is what the `dead_code`
+/// warning is reporting. Parsing into named fields is the validation — collapsing it to
+/// positional arguments to satisfy the lint would delete the check, not the dead code.
+#[allow(dead_code)]
 struct Cfg {
     iface: String,
     ip: Ipv4Addr,
@@ -62,6 +70,12 @@ struct Cfg {
 }
 
 /// What this invocation should do.
+///
+/// Same partition artefact as `Cfg` above: the payloads are read by the `eos-netcfg`
+/// binary's dispatch, and the `eos-control` binary compiles the module without ever
+/// matching on an `Action`. The payloads are the parsed, validated arguments -- dropping
+/// them to silence the lint would throw away the parse.
+#[allow(dead_code)]
 enum Action {
     /// Pin a fixed address (password required).
     Static(Cfg),
@@ -147,8 +161,8 @@ fn main() {
 mod redox_impl {
     use super::{Action, Cfg};
     use crate::netcore::{
-        self, netmask_to_prefix, parse_addr_list, parse_default_gateway, prefix_to_netmask, NetMode,
-        NET_MODE_PATH,
+        self, netmask_to_prefix, parse_addr_list, parse_default_gateway, prefix_to_netmask,
+        NetMode, NET_MODE_PATH,
     };
     use std::time::{Duration, Instant};
 
@@ -212,7 +226,12 @@ mod redox_impl {
             .as_deref()
             .and_then(parse_default_gateway);
         let dns = netcore::read_netcfg("/scheme/netcfg/resolv/nameserver");
-        write_files(&ip, &prefix_to_netmask(prefix), gw.as_deref(), dns.as_deref());
+        write_files(
+            &ip,
+            &prefix_to_netmask(prefix),
+            gw.as_deref(),
+            dns.as_deref(),
+        );
         Some(ip)
     }
 

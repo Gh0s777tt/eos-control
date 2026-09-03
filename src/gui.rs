@@ -144,7 +144,7 @@ fn build_rows(procs: Vec<sys::Proc>, needle: &str, expanded: &HashSet<String>) -
         });
         if is_expanded {
             // Heaviest instance first within the group too.
-            instances.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes));
+            instances.sort_by_key(|p| std::cmp::Reverse(p.mem_bytes));
             for p in &instances {
                 rows.push(leaf_item(p, true));
             }
