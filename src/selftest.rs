@@ -194,7 +194,11 @@ fn net_core() -> Result<(), String> {
 
     // Reference both setters without a valid-input call (that would reconfigure
     // the live network); the render test proves the applies end to end.
-    let _apply: fn(&str, &str, i32, &str, &str, &str) -> Result<(), String> = sys::apply_static;
+    // A named alias rather than the six-argument type inline: clippy calls the inline
+    // form "very complex", and it is right -- the point of these two lines is that the
+    // setters still have the shape the GUI calls them with, which a reader should see.
+    type ApplyStatic = fn(&str, &str, i32, &str, &str, &str) -> Result<(), String>;
+    let _apply: ApplyStatic = sys::apply_static;
     let _dhcp: fn(&str, &str) -> Result<(), String> = sys::apply_dhcp;
     Ok(())
 }

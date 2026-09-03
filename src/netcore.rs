@@ -129,7 +129,11 @@ pub fn netmask_to_prefix(mask: &str) -> Option<u8> {
     let bits = u32::from(addr);
     let ones = bits.leading_ones();
     // Reject non-contiguous masks: the ones-count must reconstruct the value.
-    let canonical = if ones == 0 { 0 } else { u32::MAX << (32 - ones) };
+    let canonical = if ones == 0 {
+        0
+    } else {
+        u32::MAX << (32 - ones)
+    };
     if bits == canonical {
         Some(ones as u8)
     } else {

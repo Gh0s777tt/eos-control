@@ -60,6 +60,12 @@ pub fn to_root(password: &str) -> Result<libredox::Fd, String> {
 }
 
 /// Host stub — there is no `/scheme/sudo` off E-OS, so elevation is impossible.
+///
+/// `dead_code` here means "unused by THIS binary", not unused by the product: the crate
+/// builds three binaries from one tree and each reaches a different part of it. `to_root`
+/// is called by `power.rs:50` and `netcfg.rs:354/358`; the `eos-control` binary compiles
+/// the stub without calling it. Measured when `checks-heavy` first ran (ROADMAP `RH-018`).
+#[allow(dead_code)]
 /// The shims are Redox-target tools; the host build exists only so the crate
 /// compiles (and the GUI can degrade gracefully) on a developer's box.
 #[cfg(not(target_os = "redox"))]

@@ -47,6 +47,12 @@ pub struct Proc {
     /// Owning user id (EUID column).
     pub owner: String,
     /// Scheduler status (STAT column).
+    ///
+    /// Collected but not yet surfaced: the Processes tab shows label/owner/CPU/memory and
+    /// has no STAT column. Kept because the parser already has the value and dropping it
+    /// would mean re-deriving it when the column arrives — and marked, so that "never read"
+    /// is a recorded decision rather than a warning somebody learns to scroll past.
+    #[allow(dead_code)]
     pub status: String,
     /// Accumulated CPU time (TIME column).
     pub cpu_time: String,
@@ -482,12 +488,12 @@ fn host_storage() -> Storage {
     use std::mem::MaybeUninit;
     let mut buf = MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: statvfs fills `buf` from a valid NUL-terminated path.
-    let rc = unsafe { libc::statvfs(b"/\0".as_ptr().cast(), buf.as_mut_ptr()) };
+    let rc = unsafe { libc::statvfs(c"/".as_ptr(), buf.as_mut_ptr()) };
     if rc != 0 {
         return Storage::default();
     }
     let v = unsafe { buf.assume_init() };
-    storage_from(v.f_bsize as u64, v.f_blocks as u64, v.f_bavail as u64)
+    storage_from(v.f_bsize, v.f_blocks as u64, v.f_bavail as u64)
 }
 
 #[cfg(target_os = "redox")]
