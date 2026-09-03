@@ -42,6 +42,34 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
 - **Power** — reboot / shutdown, each a two-step confirm + password, via the
   privileged `eos-power` shim (`docs/design-eos-power.md`).
 
+## Download — Linux only, and that is deliberate
+
+E-OS Control is a **developer** build outside E-OS, not a consumer download beside Notes and
+Guard. That is what `PR-008` in the roadmap says, and it is why only one archive is produced:
+
+| system | archive | contents |
+|---|---|---|
+| Linux x86_64 | `eos-control-<ver>-x86_64-unknown-linux-gnu.tar.gz` | `eos-control`, `LICENSE`, `README.md` |
+
+A `.sha256` accompanies it, taken over the archive — the file a person actually downloads.
+
+There is **no Windows archive**, and the reason is scope rather than a compiler: the Windows work
+would be the same two lines the sibling products carry. If that changes, it changes in the roadmap
+first.
+
+Three things worth knowing before running it off E-OS:
+
+1. **The archive is not signed.** Signing product downloads needs a key a human generates and
+   holds outside this repository, so a checksum is all there is. It proves the download was not
+   corrupted; it does not prove who built it.
+2. **fontconfig must be present at runtime.** The build deliberately `dlopen`s libfontconfig
+   rather than linking it — that is what makes the cross build possible — so a system without it
+   starts and then finds no fonts. Every mainstream desktop distribution has it.
+3. **Half the tabs have nothing to talk to.** Control reads and writes Redox schemes:
+   `/etc/net` for Network, the sudo scheme for privileged actions, `audio:volume` for Sound. On a
+   Linux host those are absent, so it is a build for looking at the interface and working on it,
+   not for administering the machine you run it on.
+
 ## Headless self-test
 
 `eos-control --selftest` proves every core without a display — the system/process

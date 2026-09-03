@@ -35,10 +35,39 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 slint  = { version = "1.17", default-features = false, features = ["compat-1-0", "std", "renderer-software"], optional = true }
 eos-ui = { git = "https://github.com/Gh0s777tt/eos-ui.git", rev = "9fb3f3e4a3ecf1c152b03662db0723869206e5d6", optional = true }
 
+# HOST WINDOWING BACKEND — Linux only, and that is a scope decision, not a limitation.
+# ROADMAP `PR-008` puts eos-control down as a DEVELOPER build for Linux, not a consumer
+# download alongside Notes and Guard, so no Windows section is written here. Adding one
+# would be the same two lines the sibling products carry (`muda` on, for the upstream cfg
+# mismatch in i-slint-backend-winit 1.17.1); the reason it is absent is the roadmap, not
+# a compiler.
+#
+# Two facts decide this section's shape, both from the sibling products:
+#   1. cargo refuses the same crate under two names in one package, so the host backend
+#      cannot be a renamed second `slint` entry;
+#   2. a feature that switched `slint/backend-winit` on would switch it on for EVERY
+#      target, Redox included — and modern winit has no Redox backend.
+# Target-scoped and optional gives both: Redox never resolves it, and a host build pulls
+# winit in only when asked.
+[target.'cfg(all(unix, not(target_os = "redox"), not(target_os = "macos")))'.dependencies]
+i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software", "x11", "wayland"], optional = true }
+
+# Linux, second half: dlopen fontconfig instead of linking it. Without this a cross build
+# stops in yeslogic-fontconfig-sys' build.rs — "pkg-config has not been configured to
+# support cross-compilation" — because it wants a target sysroot that is not there.
+# `i-slint-common` is declared directly, target-scoped and optional, ONLY so the feature
+# can be named; nothing in src/ calls it, and cargo's feature unification applies it to the
+# copy the rest of the graph already pulls in. The `=1.17.1` pin is not cosmetic:
+# unification holds only while both paths resolve to one version.
+[target.'cfg(target_os = "linux")'.dependencies]
+i-slint-common = { version = "=1.17.1", default-features = false, features = ["fontconfig-dlopen"], optional = true }
+
 [features]
 # The GUI targets Redox; hosts build the CLI/selftest half (--no-default-features).
 default = ["gui"]
 gui = ["dep:slint", "dep:eos-ui"]
+# The escape hatch for a real window on a Linux host — what `packaging/release.sh` builds.
+host-backend = ["gui", "dep:i-slint-backend-winit", "dep:i-slint-common"]
 
 [build-dependencies]
 slint-build = "1.17"
