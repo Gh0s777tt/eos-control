@@ -1,1 +1,4 @@
 /target
+
+# Built by packaging/release.sh; artefacts belong in a pipeline, not in git.
+/dist

@@ -1,7 +1,7 @@
 # E-OS Control CI — light tier on gitlab.com shared runners.
 # The real target build (aarch64/x86_64-unknown-redox) happens in the meta-repo
 # heavy build; here we gate formatting and the CLI/selftest half.
-stages: [lint, build]
+stages: [lint, build, package]
 
 fmt:
   image: "rust:slim"
@@ -19,3 +19,58 @@ build-host:
     # is the meta-repo heavy image build.
     - cargo build --locked --no-default-features
     - cargo run  --locked --no-default-features -- --selftest
+
+# ─────────────────────────  PR-008: a Linux download  ─────────────────────────
+# LINUX ONLY, ON PURPOSE. ROADMAP `PR-008` records eos-control as a DEVELOPER build for
+# Linux rather than a consumer download beside Notes and Guard, so there is no
+# `package-windows` here. The absence is a scope decision; the Windows work would be the
+# same two Cargo.toml lines the sibling products carry.
+#
+# `packaging/release.sh` is the machinery, and it is the same file, byte for byte, in every
+# E-OS product repository. It builds one target and then LOOKS AT THE FILE — `file -b`
+# against a rule per target, plus a 1 MiB floor — because a green `cargo build` is not
+# evidence (CLAUDE.md §5.3). `--selftest` runs first and checks the checks: 13 fabricated
+# cases, each of which must be REFUSED, including the routing decision that says which
+# triples need zig.
+#
+# `tags: [eos-heavy]` because the shared runners are out of quota and because the cross
+# build needs zig, cargo-zigbuild and the rustup target, which live on the self-hosted Mac.
+# `needs: []` because without it this job comes back SKIPPED whenever the light tier dies
+# on quota — and a skipped job reads exactly like a job with nothing to complain about.
+package-linux:
+  stage: package
+  tags:
+    - eos-heavy
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-control-ci-linux"
+  before_script:
+    # rustup here is Homebrew's, so cargo is NOT in ~/.cargo/bin — the meta-repository's
+    # `local-gates` job learned that as `cargo: command not found`.
+    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
+    - command -v cargo zig cargo-zigbuild python3 file
+    - rustup target add x86_64-unknown-linux-gnu
+    # A symlink, not CARGO_TARGET_DIR: release.sh addresses the binary as
+    # `target/<triple>/release/…`. It leaves the default because this runner's internal
+    # disk was measured at 96-99 %% full twice on 2026-09-03 (CLAUDE.md P-16, §21.1), and
+    # rusqlite's bundled SQLite plus blake3 make this target directory a large one.
+    - mkdir -p "$EOS_XBUILD" "$TMPDIR"
+    - rm -rf target dist && ln -s "$EOS_XBUILD" target
+    - bash packaging/release.sh --selftest
+  script:
+    - bash packaging/release.sh x86_64-unknown-linux-gnu dist
+    # The binary itself, not the archive around it and not the exit code of the step that
+    # made it. release.sh already asserted this; printing it puts the measurement in the
+    # log where a reviewer sees it instead of a green tick.
+    - file -b target/x86_64-unknown-linux-gnu/release/eos-control
+    - ls -l dist/
+    - cat dist/*.sha256
+  artifacts:
+    name: "eos-control-x86_64-unknown-linux-gnu-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - dist/
+    expire_in: 1 week
