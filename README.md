@@ -31,6 +31,18 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
   a dangerous-permission **audit** (setuid/setgid/world-writable), a
   tamper-evident baseline digest, and a **scan-scope** check (below).
   (Ported from `eos-guard`.)
+- **Network** — the **live** config read from the `netcfg:` scheme (interface, IP,
+  netmask, gateway, DNS, MAC, stack status), plus a **static editor**: set the
+  IP/prefix/gateway/DNS and apply them live. The write is root-only, so it goes
+  through the privileged `eos-netcfg` shim (password-gated, GUI never runs as
+  root — like the power actions). See `docs/design-eos-control-network.md`.
+- **Storage** — root-filesystem capacity / used / free / use-% via `statvfs`
+  (redoxfs `fstatvfs` on E-OS).
+- **Sound** — audiod's master volume (a slider + mute over `audio:volume`); shows
+  an honest "unavailable" state when no `audiohw:` driver is up.
+- **Power** — reboot / shutdown, each a two-step confirm + password, via the
+  privileged `eos-power` shim (`docs/design-eos-power.md`).
+
 ### Scan scope
 
 The directory list is a free-text field the person edits between one scan and the
@@ -58,18 +70,6 @@ diffs correctly, and rewriting `meta.roots` cannot hide a real removal — only 
 explanation. `meta.roots` is deliberately **not** a baseline-digest input, because
 widening that input would make every baseline already on disk report **⚠ WZORZEC
 NARUSZONY** after an upgrade that changed no file.
-
-- **Network** — the **live** config read from the `netcfg:` scheme (interface, IP,
-  netmask, gateway, DNS, MAC, stack status), plus a **static editor**: set the
-  IP/prefix/gateway/DNS and apply them live. The write is root-only, so it goes
-  through the privileged `eos-netcfg` shim (password-gated, GUI never runs as
-  root — like the power actions). See `docs/design-eos-control-network.md`.
-- **Storage** — root-filesystem capacity / used / free / use-% via `statvfs`
-  (redoxfs `fstatvfs` on E-OS).
-- **Sound** — audiod's master volume (a slider + mute over `audio:volume`); shows
-  an honest "unavailable" state when no `audiohw:` driver is up.
-- **Power** — reboot / shutdown, each a two-step confirm + password, via the
-  privileged `eos-power` shim (`docs/design-eos-power.md`).
 
 ## Download — Linux only, and that is deliberate
 
