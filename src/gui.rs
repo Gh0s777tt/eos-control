@@ -1,8 +1,10 @@
 //! The Slint GUI half of E-OS Control (Redox-target concern; hosts may build
 //! with `--no-default-features` for the CLI/selftest half only).
 
+use crate::paths;
 use crate::security::{db, scan};
 use crate::sys;
+use eos_fsintegrity::{parse_roots, DEFAULT_SCAN_BUDGET as SCAN_BUDGET};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -10,18 +12,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 slint::include_modules!();
-
-/// Cap the number of files a single Security scan hashes, so pointing it at a
-/// huge tree can't wedge the single-threaded event loop.
-const SCAN_BUDGET: usize = 20_000;
-
-fn parse_roots(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|r| r.trim())
-        .filter(|r| !r.is_empty())
-        .map(str::to_string)
-        .collect()
-}
 
 fn kind_of(s: db::Status) -> i32 {
     match s {
@@ -431,7 +421,7 @@ pub fn run() {
     // ── Security tab ─────────────────────────────────────────────
     // One baseline DB shared by both actions; None if it can't be opened.
     let sdb: Rc<RefCell<Option<db::Db>>> =
-        Rc::new(RefCell::new(db::Db::open(&db::default_path()).ok()));
+        Rc::new(RefCell::new(db::Db::open(&paths::baseline_db()).ok()));
     if let Some(d) = sdb.borrow().as_ref() {
         let n = d.baseline_count().unwrap_or(0);
         // `.unwrap_or(true)` used to stand here: a database error was displayed as "intact".

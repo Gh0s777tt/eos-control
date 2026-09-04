@@ -30,7 +30,9 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
 - **Security** — a blake3 file-integrity **baseline** + diff (NEW/MODIFIED/REMOVED),
   a dangerous-permission **audit** (setuid/setgid/world-writable), a
   tamper-evident baseline digest, and a **scan-scope** check (below).
-  (Ported from `eos-guard`.)
+  The engine is [`eos-fsintegrity`](https://gitlab.com/e-os/eos-guard/-/tree/main/crates/eos-fsintegrity),
+  a workspace crate of `eos-guard` depended on by git revision — one engine for both
+  products (`PR-004`), no longer a ported copy.
 - **Network** — the **live** config read from the `netcfg:` scheme (interface, IP,
   netmask, gateway, DNS, MAC, stack status), plus a **static editor**: set the
   IP/prefix/gateway/DNS and apply them live. The write is root-only, so it goes

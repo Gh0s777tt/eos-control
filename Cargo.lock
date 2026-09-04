@@ -1065,7 +1065,7 @@ dependencies = [
 name = "eos-control"
 version = "0.1.0"
 dependencies = [
- "blake3",
+ "eos-fsintegrity",
  "eos-ui",
  "i-slint-backend-winit",
  "i-slint-common",
@@ -1075,6 +1075,15 @@ dependencies = [
  "rusqlite",
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "eos-fsintegrity"
+version = "0.1.0"
+source = "git+https://gitlab.com/e-os/eos-guard.git?rev=89721810972e6fd1d5e169c47180e39c91e66366#89721810972e6fd1d5e169c47180e39c91e66366"
+dependencies = [
+ "blake3",
+ "rusqlite",
 ]
 
 [[package]]
