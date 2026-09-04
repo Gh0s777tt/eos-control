@@ -28,8 +28,37 @@ shared [`eos-ui`](https://gitlab.com/e-os/eos-ui) Slint-on-Orbital backend.
     relibc routes to the kernel's unblockable ForceKill via `libredox`);
   - live refresh, memory + CPU time + owner + status, and a filter.
 - **Security** — a blake3 file-integrity **baseline** + diff (NEW/MODIFIED/REMOVED),
-  a dangerous-permission **audit** (setuid/setgid/world-writable), and a
-  tamper-evident baseline digest. (Ported from `eos-guard`.)
+  a dangerous-permission **audit** (setuid/setgid/world-writable), a
+  tamper-evident baseline digest, and a **scan-scope** check (below).
+  (Ported from `eos-guard`.)
+### Scan scope
+
+The directory list is a free-text field the person edits between one scan and the
+next, and the baseline now records the set it was taken over (`meta.roots`).
+
+**A file the scan never looked for is not a file that was removed.** Baseline
+`/usr/bin, /etc`, narrow the field to `/etc`, press Skanuj, and every file under
+`/usr/bin` used to come back **USUNIĘTY — brak na dysku**, about a tree nothing had
+opened. Clearing the field entirely condemned the whole baseline the same way. With
+real roots that is thousands of rows, and a Security tab that reports thousands of
+removals that did not happen is one people learn to ignore.
+
+Those files are now **counted, not listed**, and the count reaches the status line
+together with a `⚠ ZAKRES:` note naming which root was dropped or added. Counting
+rather than listing is the point: a thousand rows saying *not checked* is the same
+wall of noise under a politer label, and dropping them silently would be fail-open.
+
+A **widened** scan is warned about but not filtered — every extra **NOWY** it produces
+is a *true* statement ("this file is not in the baseline"), merely an uninformative
+one, which is the opposite of a false USUNIĘTY.
+
+The decision does **not** read `meta.roots`: what counts as unchecked comes from the
+roots *this scan actually walked*. So a baseline written before the field existed still
+diffs correctly, and rewriting `meta.roots` cannot hide a real removal — only spoil the
+explanation. `meta.roots` is deliberately **not** a baseline-digest input, because
+widening that input would make every baseline already on disk report **⚠ WZORZEC
+NARUSZONY** after an upgrade that changed no file.
+
 - **Network** — the **live** config read from the `netcfg:` scheme (interface, IP,
   netmask, gateway, DNS, MAC, stack status), plus a **static editor**: set the
   IP/prefix/gateway/DNS and apply them live. The write is root-only, so it goes
@@ -74,8 +103,11 @@ Three things worth knowing before running it off E-OS:
 
 `eos-control --selftest` proves every core without a display — the system/process
 snapshot, the byte-size math behind group memory sums, the security baseline/audit/
-digest, and the **force-kill path** (it spawns a throwaway child, kills it, and
-confirms it dies) — printing `EOS-CONTROL-SELFTEST-OK`. Used by boot probes and CI.
+digest, **both directions of the scan-scope rule** (a narrowed scan over an untouched
+tree must report zero removals and two files out of scope; a scan over the baseline's
+own roots must report a genuine deletion and print nothing about scope), and the
+**force-kill path** (it spawns a throwaway child, kills it, and confirms it dies) —
+printing `EOS-CONTROL-SELFTEST-OK`. Used by boot probes and CI.
 On a host it reads `/proc`.
 
 ## Building

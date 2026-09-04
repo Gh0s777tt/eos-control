@@ -3,7 +3,7 @@
 //! (asserted from the boot serial / CI). No display. Covers both the system/
 //! process core (Overview + Processes tabs) and the security core (Security tab).
 
-use crate::security::{db::BaselineState, db::Db, db::Status, scan};
+use crate::security::{db, db::BaselineState, db::Db, db::ScopeState, db::Status, scan};
 use crate::sys;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -269,15 +269,19 @@ fn system_core() -> Result<(), String> {
 }
 
 /// Security: baseline a throwaway tree, confirm WAL, confirm a clean re-scan
-/// flags the setuid file (the audit), and that a tampered baseline fails its
-/// digest. This is the ported eos-guard proof (U-089/U-090).
+/// flags the setuid file (the audit), confirm both directions of the scan-scope
+/// rule, and that a tampered baseline fails its digest. This is the ported
+/// eos-guard proof (U-089/U-090).
 fn security_core() -> Result<(), String> {
     let db_path = std::env::temp_dir().join("eos-control-selftest.db");
     let _ = fs::remove_file(&db_path);
     let root = std::env::temp_dir().join("eos-control-selftest");
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e}"))?;
+    // `sub/` is not decoration: the scan-scope arms below need a directory to narrow the roots
+    // DOWN TO, and a scope rule can only be proved by scanning less ground than the baseline.
+    fs::create_dir_all(root.join("sub")).map_err(|e| format!("mkdir: {e}"))?;
     fs::write(root.join("a.txt"), b"alpha").map_err(|e| format!("write a: {e}"))?;
+    fs::write(root.join("sub/b.txt"), b"beta").map_err(|e| format!("write b: {e}"))?;
     let suid = root.join("suid.bin");
     fs::write(&suid, b"root-power").map_err(|e| format!("write suid: {e}"))?;
     fs::set_permissions(&suid, fs::Permissions::from_mode(0o4755))
@@ -294,10 +298,10 @@ fn security_core() -> Result<(), String> {
         return Err("security db is not in WAL mode".into());
     }
     let (entries, _) = scan::scan_roots(&roots, 10_000);
-    if entries.len() != 2 {
-        return Err(format!("expected 2 files, scanned {}", entries.len()));
+    if entries.len() != 3 {
+        return Err(format!("expected 3 files, scanned {}", entries.len()));
     }
-    db.set_baseline(&entries)
+    db.set_baseline(&entries, &roots)
         .map_err(|e| format!("set_baseline: {e}"))?;
     if !db.verify_baseline().is_intact() {
         return Err(format!(
@@ -305,13 +309,93 @@ fn security_core() -> Result<(), String> {
             db.verify_baseline()
         ));
     }
-    let (findings, sum) = db.diff(&entries).map_err(|e| format!("diff: {e}"))?;
+    let (findings, sum) = db
+        .diff(&entries, &roots)
+        .map_err(|e| format!("diff: {e}"))?;
     if sum.warn != 1
         || !findings
             .iter()
             .any(|f| f.status == Status::Warn && f.path.ends_with("suid.bin"))
     {
         return Err(format!("audit did not flag the setuid file: {sum:?}"));
+    }
+    if sum.out_of_scope != 0 {
+        return Err(format!(
+            "a scan over the baseline's own roots skipped {} files",
+            sum.out_of_scope
+        ));
+    }
+
+    // ── Scan scope, both directions ─────────────────────────────────────────────────────────
+    // The roots are a free-text field the person edits between scans. Narrowing it to `sub/` and
+    // re-diffing the UNTOUCHED tree used to report the two files above `sub/` as USUNIĘTY --
+    // "brak na dysku" -- about a tree the scan never opened. With real roots that is thousands of
+    // rows, and a Security tab nobody reads protects nobody.
+    let narrowed = vec![root.join("sub").to_string_lossy().into_owned()];
+    let (inner, _) = scan::scan_roots(&narrowed, 10_000);
+    if inner.len() != 1 {
+        return Err(format!(
+            "expected 1 file under sub/, scanned {}",
+            inner.len()
+        ));
+    }
+    let (findings, sum) = db
+        .diff(&inner, &narrowed)
+        .map_err(|e| format!("diff narrowed: {e}"))?;
+    if sum.removed != 0 {
+        return Err(format!(
+            "a narrowed scan reported {} removals it never looked for",
+            sum.removed
+        ));
+    }
+    if sum.out_of_scope != 2 {
+        return Err(format!(
+            "expected 2 baseline files out of scope, got {}",
+            sum.out_of_scope
+        ));
+    }
+    if let Some(f) = findings.iter().find(|f| f.status == Status::Removed) {
+        return Err(format!("a narrowed scan still listed a removal: {f:?}"));
+    }
+    match db.scope(&narrowed) {
+        ScopeState::Changed { ref dropped, .. } if dropped.len() == 1 && dropped[0] == roots[0] => {
+        }
+        other => return Err(format!("narrowed scan reported scope {other:?}")),
+    }
+    let note = db::scope_note(&db.scope(&narrowed), sum.out_of_scope)
+        .ok_or("a narrowed scan that skipped 2 files printed no scope note")?;
+    if !note.contains("NIE SPRAWDZONO") || !note.contains('2') {
+        return Err(format!("scope note says too little: {note}"));
+    }
+    // ...and an unchanged scope must print NOTHING. A warning on every scan is a warning nobody
+    // reads (CLAUDE.md §5.4: show when the check refuses AND when it does not).
+    if let Some(quiet) = db::scope_note(&db.scope(&roots), 0) {
+        return Err(format!("an unchanged scope still printed: {quiet}"));
+    }
+
+    // THE NEGATIVE ARM, and the reason the suppression above is not a blanket: same roots as the
+    // baseline, one file genuinely deleted. Without this, `covered_by` returning false for
+    // everything -- a Security tab that can no longer report a deletion at all -- would pass.
+    fs::remove_file(root.join("sub/b.txt")).map_err(|e| format!("rm b: {e}"))?;
+    let (after, _) = scan::scan_roots(&roots, 10_000);
+    let (findings, sum) = db
+        .diff(&after, &roots)
+        .map_err(|e| format!("diff removed: {e}"))?;
+    if sum.removed != 1 {
+        return Err(format!("expected 1 removed, got {}", sum.removed));
+    }
+    if sum.out_of_scope != 0 {
+        return Err(format!(
+            "an unchanged root set put {} files out of scope",
+            sum.out_of_scope
+        ));
+    }
+    let gone = findings
+        .iter()
+        .find(|f| f.status == Status::Removed)
+        .ok_or("no REMOVED finding for a file that really went missing")?;
+    if !gone.path.ends_with("b.txt") {
+        return Err(format!("wrong removed path: {}", gone.path));
     }
 
     // Tamper the baseline out of band and confirm the digest catches it.
