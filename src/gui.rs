@@ -459,7 +459,11 @@ pub fn run() {
             }
             let (entries, truncated) = scan::scan_roots(&roots, SCAN_BUDGET);
             let n = entries.len();
-            match sdb.borrow_mut().as_mut().map(|d| d.set_baseline(&entries)) {
+            match sdb
+                .borrow_mut()
+                .as_mut()
+                .map(|d| d.set_baseline(&entries, &roots))
+            {
                 Some(Ok(())) => w.set_sec_status(SharedString::from(format!(
                     "Wzorzec ustawiony: {n} plików{}.",
                     if truncated { " (obcięto)" } else { "" }
@@ -487,12 +491,16 @@ pub fn run() {
             let roots = parse_roots(w.get_roots().as_str());
             let (entries, truncated) = scan::scan_roots(&roots, SCAN_BUDGET);
             let state = d.verify_baseline();
-            match d.diff(&entries) {
+            // The roots in the field decide what this scan actually covered, so they go to `diff`
+            // too: a baseline path outside them was never looked for, and must not be reported as
+            // removed. `scope` reads what the baseline recorded, and only names the difference.
+            let scope = d.scope(&roots);
+            match d.diff(&entries, &roots) {
                 Ok((findings, sum)) => {
                     let changed = sum.new + sum.modified + sum.removed + sum.warn;
                     show_findings(&w, &findings);
                     w.set_sec_status(SharedString::from(format!(
-                        "Przeskanowano {} plików: {} zmian/ostrzeżeń{}.{}",
+                        "Przeskanowano {} plików: {} zmian/ostrzeżeń{}.{}{}",
                         entries.len(),
                         changed,
                         if truncated { " (obcięto)" } else { "" },
@@ -501,7 +509,12 @@ pub fn run() {
                             String::new()
                         } else {
                             format!("  ⚠ WZORZEC {}", state.describe())
-                        }
+                        },
+                        // The scope line. `scope_note` owns the "when to stay quiet" rule so it
+                        // can be tested without a window -- an unchanged scope prints nothing.
+                        // This tab has no summary chips, so the status line is the only place the
+                        // count of unchecked files can appear; it is never omitted when non-zero.
+                        db::scope_note(&scope, sum.out_of_scope).unwrap_or_default()
                     )));
                 }
                 Err(e) => w.set_sec_status(SharedString::from(format!("Błąd skanu: {e}"))),
