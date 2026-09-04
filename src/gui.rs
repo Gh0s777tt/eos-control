@@ -440,7 +440,10 @@ pub fn run() {
         win.set_sec_status(SharedString::from(if n == 0 {
             "Brak wzorca — kliknij „Ustaw wzorzec”.".to_string()
         } else if !state.is_intact() {
-            format!("⚠ Wzorzec ({n} plików) {} — ustaw ponownie.", state.describe())
+            format!(
+                "⚠ Wzorzec ({n} plików) {} — ustaw ponownie.",
+                state.describe()
+            )
         } else {
             format!("Wzorzec: {n} plików. Kliknij Skanuj.")
         }));
