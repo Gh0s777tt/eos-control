@@ -3,7 +3,7 @@
 //! (asserted from the boot serial / CI). No display. Covers both the system/
 //! process core (Overview + Processes tabs) and the security core (Security tab).
 
-use crate::security::{db::Db, db::Status, scan};
+use crate::security::{db::BaselineState, db::Db, db::Status, scan};
 use crate::sys;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -299,8 +299,11 @@ fn security_core() -> Result<(), String> {
     }
     db.set_baseline(&entries)
         .map_err(|e| format!("set_baseline: {e}"))?;
-    if !db.verify_baseline().map_err(|e| format!("verify: {e}"))? {
-        return Err("fresh baseline fails its own digest".into());
+    if !db.verify_baseline().is_intact() {
+        return Err(format!(
+            "fresh baseline is not intact: {:?}",
+            db.verify_baseline()
+        ));
     }
     let (findings, sum) = db.diff(&entries).map_err(|e| format!("diff: {e}"))?;
     if sum.warn != 1
@@ -318,8 +321,29 @@ fn security_core() -> Result<(), String> {
             .map_err(|e| format!("tamper: {e}"))?;
     }
     let db = Db::open(&db_path).map_err(|e| format!("reopen: {e}"))?;
-    if db.verify_baseline().map_err(|e| format!("verify2: {e}"))? {
+    if db.verify_baseline().is_intact() {
         return Err("tampered baseline still passes its digest".into());
+    }
+    // THE ARM THIS SELFTEST NEVER HAD. Deleting the digest row -- one row -- used to turn tamper
+    // detection off permanently while the Security tab reported the baseline intact.
+    {
+        let conn =
+            rusqlite::Connection::open(&db_path).map_err(|e| format!("reopen for digest: {e}"))?;
+        let n = conn
+            .execute("DELETE FROM meta WHERE k = 'baseline_digest'", [])
+            .map_err(|e| format!("delete digest: {e}"))?;
+        if n != 1 {
+            return Err(format!("expected to delete 1 digest row, deleted {n}"));
+        }
+    }
+    let db = Db::open(&db_path).map_err(|e| format!("reopen after digest delete: {e}"))?;
+    match db.verify_baseline() {
+        BaselineState::NoDigest => {}
+        other => {
+            return Err(format!(
+                "a baseline whose digest row was deleted reported {other:?}, not NoDigest"
+            ))
+        }
     }
 
     let _ = fs::remove_dir_all(&root);

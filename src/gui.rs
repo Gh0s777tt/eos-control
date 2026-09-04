@@ -434,11 +434,16 @@ pub fn run() {
         Rc::new(RefCell::new(db::Db::open(&db::default_path()).ok()));
     if let Some(d) = sdb.borrow().as_ref() {
         let n = d.baseline_count().unwrap_or(0);
-        let intact = d.verify_baseline().unwrap_or(true);
+        // `.unwrap_or(true)` used to stand here: a database error was displayed as "intact".
+        // `verify_baseline` no longer returns anything that can be unwrapped into reassurance.
+        let state = d.verify_baseline();
         win.set_sec_status(SharedString::from(if n == 0 {
             "Brak wzorca — kliknij „Ustaw wzorzec”.".to_string()
-        } else if !intact {
-            format!("⚠ Wzorzec ({n} plików) NARUSZONY — ustaw ponownie.")
+        } else if !state.is_intact() {
+            format!(
+                "⚠ Wzorzec ({n} plików) {} — ustaw ponownie.",
+                state.describe()
+            )
         } else {
             format!("Wzorzec: {n} plików. Kliknij Skanuj.")
         }));
@@ -481,7 +486,7 @@ pub fn run() {
             }
             let roots = parse_roots(w.get_roots().as_str());
             let (entries, truncated) = scan::scan_roots(&roots, SCAN_BUDGET);
-            let intact = d.verify_baseline().unwrap_or(true);
+            let state = d.verify_baseline();
             match d.diff(&entries) {
                 Ok((findings, sum)) => {
                     let changed = sum.new + sum.modified + sum.removed + sum.warn;
@@ -491,10 +496,11 @@ pub fn run() {
                         entries.len(),
                         changed,
                         if truncated { " (obcięto)" } else { "" },
-                        if intact {
-                            ""
+                        // Same rule as the startup line: only `Intact` prints nothing.
+                        if state.is_intact() {
+                            String::new()
                         } else {
-                            "  ⚠ WZORZEC NARUSZONY"
+                            format!("  ⚠ WZORZEC {}", state.describe())
                         }
                     )));
                 }
